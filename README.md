@@ -19,6 +19,19 @@ It allows you to create a SOCKS5 proxy and remote port forwarder over SSH, makin
 | Isolated “research tab”          | Launch a browser profile through `so chrome`; keeps cookies and DNS separate from main profile.             |
 | Reverse proxying to localhost    | Make ports of local services in development available for a reverse proxy on the remote server (proxy pass) |
 
+
+## What is forwarded?
+
+- ✅ **TCP traffic**: Any TCP socket opened by a SOCKS‑aware client is forwarded through the tunnel.
+- ✅ **DNS**: Domains in the PAC file are resolved on the SSH host.
+- ✅ **Ports**: Any port on the SSH host can be used for remote forwarding.
+
+## What is not forwarded?
+
+- ❌ **UDP traffic**: Only TCP is supported by default.
+- ❌ **Non‑SOCKS clients**: Apps not configured for the proxy go direct.
+
+
 ## Setup
 
 Download the susops repository:
@@ -160,15 +173,3 @@ See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 - **Port in use**
   – If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
-
-
-## What is forwarded?
-
-- ✅ **TCP traffic**: Any TCP socket opened by a SOCKS‑aware client is forwarded through the tunnel.
-- ✅ **DNS**: Domains in the PAC file are resolved on the SSH host.
-- ✅ **Ports**: Any port on the SSH host can be used for remote forwarding.
-
-## What is not forwarded?
-
-- ❌ **UDP traffic**: Only TCP is supported by default.
-- ❌ **Non‑SOCKS clients**: Apps not configured for the proxy go direct.
