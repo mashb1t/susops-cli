@@ -153,16 +153,13 @@ See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 ### Troubleshooting
 - **“Connection refused”** on the remote port
-  – Ensure your local service is listening on the specified `LOCAL_PORT`.
-  – Check that the SSH host’s `GatewayPorts` setting in `/etc/ssh/sshd_config` allows remote binds.
+  – Make sure your local service is listening on the specified `LOCAL_PORT`.
+  – Ensure the remote server’s sshd daemon config allows remote port forwarding.
+  Check `/etc/ssh/sshd_config` for `AllowTcpForwarding yes` (default `yes`) and `GatewayPorts yes` or `GatewayPorts clientspecified` (default `no`).
+  Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 - **Port in use**
   – If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
-
-- **Connection issues for remote port forwarding**
-  – Ensure the remote server’s sshd daemon config allows remote port forwarding.
-  Check `/etc/ssh/sshd_config` for `AllowTcpForwarding yes` (default `yes`) and `GatewayPorts` to `yes` or `clientspecified` (default `no`).
-  Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 
 ## What is forwarded?
