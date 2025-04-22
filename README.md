@@ -4,11 +4,9 @@
 SusOps (aliased `so`) is a simple command-line tool wrapper function for managing SSH tunnels and proxy settings.
 It allows you to create a SOCKS5 proxy and forward ports over SSH, making it easy to tunnel traffic using a remote server.
 
-<img src="images/so.jpg" width="500">
-
 ## Use Cases
 
-| Scenario                         | Category          | How SusOps helps                                                                                             |
+| Scenario                         | Feature           | How SusOps helps                                                                                             |
 |----------------------------------|-------------------|--------------------------------------------------------------------------------------------------------------|
 | Bypass web filters               | SOCKS5 Proxy      | Route only selected domains through SSH; rest of your browsing remains local.                                |
 | Circumvent hotel networks        | SOCKS5 Proxy      | SSH on 22/443, then use any TCP port (DB shells, RDP, Git) inside the SOCKS tunnel.                          |
@@ -23,17 +21,15 @@ It allows you to create a SOCKS5 proxy and forward ports over SSH, making it eas
 | Share local dev server           | Remote Forwarding | Expose your local development site (e.g. `localhost:3000`) on `remote_host:3000` for others to access.       |
 | Receive external webhooks        | Remote Forwarding | Open a public endpoint on your SSH host for testing services like N8n or GitHub webhooks without deploying.  |
 
-## What is forwarded?
+## What can be forwarded?
 
 - ✅ **TCP traffic**: Any TCP socket opened by a SOCKS‑aware client is forwarded through the tunnel.
 - ✅ **DNS**: Domains in the PAC file are resolved on the SSH host.
 - ✅ **Ports**: Any port on localhost and the SSH host can be used for forwarding (both ways).
 
-## What is not forwarded?
+## What can not be forwarded?
 
 - ❌ **UDP traffic**: Only TCP is supported by default.
-- ❌ **Non‑SOCKS clients**: Apps not configured for the proxy go direct.
-
 
 ## Setup
 
@@ -44,7 +40,7 @@ git clone https://github.com/mashb1t/susops.git
 cd susops
 ```
 
-Source in your shell (add to ~/.bashrc, ~/.zshrc, etc.):
+Source in your shell (add to ~/.zshrc, ~/.bashrc, etc.):
 
 ```bash
  echo "source ${PWD}/susops" >> ~/.zshrc
@@ -54,7 +50,7 @@ Source in your shell (add to ~/.bashrc, ~/.zshrc, etc.):
 
 Reload your shell and test it:
 ```bash
-source ~/.bashrc   # or source ~/.zshrc
+source ~/.zshrc   # or source ~/.bashrc
 so --help
 ```
 
