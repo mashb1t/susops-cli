@@ -1,4 +1,7 @@
 susops() {
+  # Disable job control PID output
+  set +m
+
   # Defaults
   local ssh_host="${SUSOPS_SSH_HOST:-pi}"
   local workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
