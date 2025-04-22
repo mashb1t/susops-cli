@@ -154,7 +154,11 @@ if (host === "example.com" || dnsDomainIs(host, ".example.com"))
     return "SOCKS5 127.0.0.1:<socks_port>";
 ```
 
-Only matching domains go through the SOCKS proxy; others use direct connections.
+This condition matches the exact domain (example.com) and one level of subdomains (e.g., sub.example.com).
+It does not include two or more levels of subdomains (e.g., sub.sub.example.com).
+If you want to include those, you can add another rule.
+
+Only matching (sub)domains go through the SOCKS proxy; others use direct connections.
 
 </details>
 
@@ -207,7 +211,9 @@ See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 <details>
 <summary>Port Collision Prevention</summary>
 
-| Check | Local Forwarding (`susops add -l LOCAL_PORT REMOTE_PORT`)            | Remote Forwarding (`susops add -r REMOTE_PORT LOCAL_PORT`)             |
+When adding a new local or remote forward, `so` checks for port collisions to prevent conflicts with existing forwards.
+
+| Check | Local Forwarding (`so add -l LOCAL_PORT REMOTE_PORT`)                | Remote Forwarding (`so add -r REMOTE_PORT LOCAL_PORT`)                 |
 |-------|----------------------------------------------------------------------|------------------------------------------------------------------------|
 | 1     | Exact rule must not already exist in `~/.susops/forward.conf`        | Exact rule must not already exist in `~/.susops/reverse.conf`          |
 | 2     | `LOCAL_PORT` must not already be the source of another local forward | `REMOTE_PORT` must not already be the source of another remote forward |
