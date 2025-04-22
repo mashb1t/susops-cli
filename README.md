@@ -1,30 +1,33 @@
 # SusOps (aka. so) - Simple SSH Proxy Operations
 (a little sus from the perspective of a SecOps team)
 
-
 SusOps (aliased `so`) is a simple command-line tool wrapper function for managing SSH tunnels and proxy settings.
-It allows you to create a SOCKS5 proxy and remote port forwarder over SSH, making it easy to tunnel traffic through a remote server.
+It allows you to create a SOCKS5 proxy and forward ports over SSH, making it easy to tunnel traffic using a remote server.
 
 <img src="images/so.jpg" width="500">
 
 ## Use Cases
 
-| Scenario                         | How susops helps                                                                                            |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------|
-| Bypass web filters               | Route only selected domains through SSH; rest of your browsing remains local.                               |
-| Circumvent hotel networks        | SSH on 22/443, then use any TCP port (DB shells, RDP, Git) inside the SOCKS tunnel.                         |
-| Secure browsing on hostile Wi‑Fi | Funnel chosen domains through your VPS, encrypting sensitive traffic end‑to‑end.                            |
-| Geo‑testing APIs                 | Map `api.example.com` to a server in another region via reverse tunnel—no full VPN required.                |
-| Remote IoT / NAS management      | Expose your local device’s UI at `remote_host:<port>` without opening extra firewall holes.                 |
-| Isolated “research tab”          | Launch a browser profile through `so chrome`; keeps cookies and DNS separate from main profile.             |
-| Reverse proxying to localhost    | Make ports of local services in development available for a reverse proxy on the remote server (proxy pass) |
-
+| Scenario                         | Category          | How SusOps helps                                                                                             |
+|----------------------------------|-------------------|--------------------------------------------------------------------------------------------------------------|
+| Bypass web filters               | SOCKS5 Proxy      | Route only selected domains through SSH; rest of your browsing remains local.                                |
+| Circumvent hotel networks        | SOCKS5 Proxy      | SSH on 22/443, then use any TCP port (DB shells, RDP, Git) inside the SOCKS tunnel.                          |
+| Secure browsing on hostile Wi‑Fi | SOCKS5 Proxy      | Funnel chosen domains through your VPS, encrypting sensitive traffic end‑to‑end.                             |
+| Isolated “research tab”          | SOCKS5 Proxy      | Launch a browser profile through `so chrome`; keeps cookies and DNS separate from main profile.              |
+| Access remote database           | Local Forwarding  | Forward a remote database port (e.g. MySQL `3306`) to `localhost:3306` for local querying and tooling.       |
+| Develop against remote services  | Local Forwarding  | Map a remote web service port (e.g. `:8080`) to your machine so you can use local debuggers and live-reload. |
+| Secure remote desktop**          | Local Forwarding  | Tunnel RDP/VNC (`3389`) or SSH to `localhost:3389` for encrypted access to your remote workstation.          |
+| Geo‑testing APIs                 | Remote Forwarding | Map `api.example.com` to a server in another region via reverse tunnel—no full VPN required.                 |
+| Remote IoT / NAS management      | Remote Forwarding | Expose your local device’s UI at `remote_host:<port>` without opening extra firewall holes.                  |
+| Reverse proxying to localhost    | Remote Forwarding | Make ports of local services in development available for a reverse proxy on the remote server (proxy pass). |
+| Share local dev server           | Remote Forwarding | Expose your local development site (e.g. `localhost:3000`) on `remote_host:3000` for others to access.       |
+| Receive external webhooks        | Remote Forwarding | Open a public endpoint on your SSH host for testing services like N8n or GitHub webhooks without deploying.  |
 
 ## What is forwarded?
 
 - ✅ **TCP traffic**: Any TCP socket opened by a SOCKS‑aware client is forwarded through the tunnel.
 - ✅ **DNS**: Domains in the PAC file are resolved on the SSH host.
-- ✅ **Ports**: Any port on the SSH host can be used for remote forwarding.
+- ✅ **Ports**: Any port on localhost and the SSH host can be used for forwarding (both ways).
 
 ## What is not forwarded?
 
@@ -97,6 +100,29 @@ so firefox
 > ```
 > and click **Re-apply settings**.
 
+## Local Port Forwarding
+
+### What it does
+- **Forwards a remote service** (e.g. `remote_host:8000`) to a local port on your machine.
+- Makes the remote app reachable at `localhost:<local_port>` without configuring remote firewall rules.
+- Useful for developing against or inspecting remote services as if they were running locally.
+
+### How to register a local forward
+```bash
+# Map your local port 3000 → remote_host:8000
+so add -l 3000 8000
+so restart
+so test 3000
+```
+
+Now, on your local machine, `curl http://localhost:3000` will hit the remote server on port 8000.
+
+### How to remove it
+```bash
+so rm -l 3000
+so restart
+```
+
 ## Remote Port Forwarding
 
 ### What it does
@@ -107,7 +133,7 @@ so firefox
 ### How to register a remote forward
 ```bash
 # Map remote port 8000 → your local port 3000
-so radd 8000 3000
+so add -r 8000 3000
 so restart
 so test 8000
 ```
@@ -115,11 +141,11 @@ Now, on the SSH host (or any client that can reach it), `curl http://localhost:8
 
 ### How to remove it
 ```bash
-so rrm 8000
+so rm -r 8000
 so restart
 ```
 
-### Under the hood
+## Under the hood
 
 <details>
 <summary>Dynamic SOCKS5 Forwarding</summary>
@@ -137,7 +163,29 @@ Only matching domains go through the SOCKS proxy; others use direct connections.
 </details>
 
 <details>
+<summary>Local Forwarding</summary>
 
+See https://www.ssh.com/academy/ssh/tunneling-example#local-forwarding
+
+1. **Configuration**  
+   Entries are stored in `~/.susops/forward.conf` as lines:
+
+   ```text
+   <local_port> <remote_host>
+    ```
+2. **During `so start`**
+   - Reads each line, builds `ssh` args:
+
+     ```text
+     -L 3000:localhost:8000
+     -L 5000:localhost:8001
+     ```
+
+3. Passes them to `ssh -N -D <socks_port> …` which establishes the local port forwards on your machine.
+
+</details>
+
+<details>
 <summary>Remote Forwarding</summary>
 
 See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
@@ -158,9 +206,17 @@ See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
     - Passes them to `ssh -N -D <socks_port> …` which maintains the tunnels.
 
-3. **Collision Prevention**
+</details>
 
-   `so radd` refuses to add a remote port that’s already registered.
+<details>
+<summary>Port Collision Prevention</summary>
+
+| Check | Local Forwarding (`susops add -l LOCAL_PORT REMOTE_PORT`)            | Remote Forwarding (`susops add -r REMOTE_PORT LOCAL_PORT`)             |
+|-------|----------------------------------------------------------------------|------------------------------------------------------------------------|
+| 1     | Exact rule must not already exist in `~/.susops/forward.conf`        | Exact rule must not already exist in `~/.susops/reverse.conf`          |
+| 2     | `LOCAL_PORT` must not already be the source of another local forward | `REMOTE_PORT` must not already be the source of another remote forward |
+| 3     | `LOCAL_PORT` must not be targeted by any existing remote forward     | `REMOTE_PORT` must not be targeted by any existing local forward       |
+| 4     | `REMOTE_PORT` must not already be the source of any remote forward   | `LOCAL_PORT` must not already be the source of any local forward       |
 
 </details>
 
