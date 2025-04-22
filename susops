@@ -53,11 +53,11 @@ susops() {
       # zsh always returns the same $RANDOM value in subshells
       # see https://github.com/bminor/bash/blob/f3a35a2d601a55f337f8ca02a541f8c033682247/variables.c#L1371
       # Workaround: read 2 bytes from /dev/random, convert to integer, map to dynamic port range
-      local raw p
+      local raw port
       raw=$(head -c2 /dev/random | od -An -tu2 | tr -d ' ')
-      p=$(( raw % 16384 + 49152 ))
-      echo "$p" > "$file"
-      echo "$p"
+      port=$(( raw % 16384 + 49152 ))
+      echo "$port" > "$file"
+      echo "$port"
     fi
   }
 
@@ -112,7 +112,6 @@ EOF
     done < "$reverse_conf"
   }
 
-  # Dispatch sub-commands
   case $cmd in
     help|-h)
       cat << EOF
@@ -293,12 +292,13 @@ EOF
     firefox)
       local PROFILE="$workspace/firefox_profile"
       mkdir -p "$PROFILE"
-      printf 'user_pref("network.proxy.type", 2);
-user_pref("network.proxy.autoconfig_url", "http://localhost:%s/susops.pac");
-' "$pac_port" > "$PROFILE/user.js"
+      printf 'user_pref("network.proxy.type", 2);\nuser_pref("network.proxy.autoconfig_url", "http://localhost:%s/susops.pac");' "$pac_port" > "$PROFILE/user.js"
       open -a "Firefox" --args -profile "$PROFILE" -no-remote
       ;;
 
-    *) susops help;;
+    *)
+      susops help
+      return 1
+      ;;
   esac
 }
