@@ -109,16 +109,16 @@ EOF
       if [[ -f $local_conf ]] && grep -q "^$target " "$local_conf" 2>/dev/null; then
         local rp=$(awk '$1==n{print $2}' n="$target" "$local_conf")
         if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ local:%s  -> remote:%s\n" "$target" "$rp"; return 0
+          printf "✅ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 0
         else
-          printf "❌ local:%s -> remote:%s\n" "$target" "$rp"; return 1
+          printf "❌ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 1
         fi
       elif [[ -f $remote_conf ]] && grep -q "^$target " "$remote_conf" 2>/dev/null; then
         local lp=$(awk '$1==n{print $2}' n="$target" "$remote_conf")
         if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ remote:%s -> localhost:%s\n" "$target" "$lp"; return 0
+          printf "✅ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 0
         else
-          printf "❌ remote:%s -> localhost:%s\n" "$target" "$lp"; return 1
+          printf "❌ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 1
         fi
       else
         printf "❌ Port %s not found in local or remote config\n" "$target"; return 1
@@ -131,7 +131,7 @@ EOF
       cat << EOF
 Usage: susops [-v|--verbose] COMMAND [ARGS]
 Commands:
-  add [-l LOCAL_PORT REMOTE_PORT] [-r REMOTE_PORT LOCAL_PORT] [HOST]  add hostname or port forward
+  add [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] [HOST]  add hostname or port forward, schema FROM -> TO
   rm  [-l LOCAL_PORT]             [-r REMOTE_PORT]            [HOST]  remove hostname or port forward
   restart                                                             stop and start (preserves ports)
   start [ssh_host] [socks_port] [pac_port]                            start proxy and PAC server
@@ -151,12 +151,12 @@ EOF
     add)
       case "$1" in
         -l)
-          local lport=$2 rport=$3
-          [[ $lport && $rport ]] || { echo "Usage: susops add -l LOCAL_PORT REMOTE_PORT"; return 1; }
+          local rport=$2 lport=$3
+          [[ $rport && $lport ]] || { echo "Usage: susops add -l REMOTE_PORT LOCAL_PORT"; echo "Map a port from a remote server to your localhost"; return 1; }
 
           # 1) Exact rule must not already exist locally
           if grep -q "^${lport} ${rport}\$" "$local_conf" 2>/dev/null; then
-            echo "Local forward localhost:${lport} -> remote:${rport} already registered"
+            echo "Local forward $ssh_host:${rport} -> localhost:${lport} already registered"
             return 1
 
           # 2) LOCAL_PORT must not already be used
@@ -176,17 +176,18 @@ EOF
 
           else
             echo "${lport} ${rport}" >> "$local_conf"
-            echo "Registered local forward localhost:${lport} -> remote:${rport}"
+            echo "Registered local forward $ssh_host:${rport} -> localhost:${lport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
           fi
           ;;
+
         -r)
-          local rport=$2 lport=$3
-          [[ $rport && $lport ]] || { echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT"; return 1; }
+          local lport=$2 rport=$3
+          [[ $lport && $rport ]] || { echo "Usage: susops add -r LOCAL_PORT REMOTE_PORT"; echo "Map a port from your localhost to a remote server"; return 1; }
 
           # 1) Exact rule must not already exist remotely
           if grep -q "^${rport} ${lport}\$" "$remote_conf" 2>/dev/null; then
-            echo "Remote forward remote:${rport} -> localhost:${lport} already registered"
+            echo "Remote forward localhost:${lport} -> $ssh_host:${rport} already registered"
             return 1
 
           # 2) REMOTE_PORT must not already be used
@@ -206,14 +207,14 @@ EOF
 
           else
             echo "${rport} ${lport}" >> "$remote_conf"
-            echo "Registered remote forward remote:${rport} -> localhost:${lport}"
+            echo "Registered remote forward localhost:${lport} -> $ssh_host:${rport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
           fi
           ;;
 
         *)
           local host=$1
-          [[ $host ]] || { echo "add [HOST] [-l LOCAL_PORT REMOTE_PORT] [-r REMOTE_PORT LOCAL_PORT] "; return 1; }
+          [[ $host ]] || { echo "Usage: add [HOST] [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] "; echo "Ports are mapped in schema FROM -> TO"; return 1; }
           if grep -q "host === \"$host\"" "$pacfile"; then
             echo "$host already in PAC"
           else
@@ -247,10 +248,10 @@ EOF
           [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
           if grep -q "^$rport " "$remote_conf" 2>/dev/null; then
             sed -i '' "/^$rport /d" "$remote_conf"
-            echo "Removed remote forward remote:$rport"
+            echo "Removed remote forward $ssh_host:$rport"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
           else
-            echo "No remote forward for remote:$rport"
+            echo "No remote forward for $ssh_host:$rport"
             return 1
           fi
           ;;
@@ -369,13 +370,13 @@ EOF
       sed -n 's/.*host === "\([^"]*\)".*/→ \1/p' "$pacfile" || echo "→ None"
       echo "Local forwards:"
       if [[ -s "$local_conf" ]]; then
-        while read -r lp rp; do echo "→ localhost:$lp -> remote:$rp"; done < "$local_conf"
+        while read -r lp rp; do echo "→ $ssh_host:$rp -> localhost:$lp"; done < "$local_conf"
       else
         echo "→ None"
       fi
       echo "Remote forwards:"
       if [[ -s "$remote_conf" ]]; then
-        while read -r rp lp; do echo "→ remote:$rp -> localhost:$lp"; done < "$remote_conf"
+        while read -r rp lp; do echo "→ localhost:$lp -> $ssh_host:$rp"; done < "$remote_conf"
       else
         echo "→ None"
       fi
