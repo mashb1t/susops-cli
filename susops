@@ -292,7 +292,13 @@ EOF
         local local_args=()
         [[ -f "$local_conf" ]] && while read -r lp rp; do local_args+=("-L" "${lp}:localhost:${rp}"); done < "$local_conf"
 
-        local ssh_cmd=( ssh -N -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+        # Build SSH command
+        local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+        if ! command -v autossh >/dev/null 2>&1; then
+          echo "autossh not found, falling back to ssh."
+          ssh_cmd=( "$ssh_command" -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+        fi
+
         $verbose && printf "Full SSH command: %s\n" "${ssh_cmd[*]}"
         nohup "${ssh_cmd[@]}" </dev/null >/dev/null 2>&1 &
         echo $! > "$socks_pidfile"
