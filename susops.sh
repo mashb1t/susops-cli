@@ -386,7 +386,10 @@ EOF
 
     ps)
       is_running "$socks_pidfile" "SOCKS5 proxy" true "$socks_port"
+      result_socks=$?
       is_running "$pac_pidfile" "PAC server" true "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
+      result_pac=$?
+      return $(( result_socks + result_pac ))
       ;;
 
     reset)
