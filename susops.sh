@@ -298,7 +298,7 @@ EOF
         # Build SSH command
         local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
         if ! command -v autossh >/dev/null 2>&1; then
-          echo "autossh not found, falling back to ssh."
+          $verbose && echo "autossh not found, falling back to ssh."
           ssh_cmd=( "$ssh_command" -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
         fi
 
@@ -330,7 +330,7 @@ EOF
 
         local max_wait=5
         local interval=0.1
-        steps=$(( max_wait / interval )) # workaround, $i has to be an integer value
+        steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
         for ((i=0; i<steps; i++)); do
           if nc_pid=$(pgrep -f "nc -l $pac_port"); then
             align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$(<"$pac_pidfile")" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
