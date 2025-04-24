@@ -44,7 +44,6 @@ Source in your shell (add to ~/.zshrc, ~/.bashrc, etc.):
 
 ```bash
  echo "source ${PWD}/susops.sh" >> ~/.zshrc
- echo 'export SUSOPS_SSH_HOST=pi # configure host in ~/.ssh/config' >> ~/.zshrc
  echo 'alias so="susops"' >> ~/.zshrc
 ```
 
@@ -81,6 +80,9 @@ so start <ssh_host>
 so add <domain>
 so restart
 ```
+
+> [!NOTE]  
+> You only have to set the SSH host once. Ports will be different each time you start the proxy, except you explicitly set them on with e.g. `so start 1080 1081` or stop via `so stop --keep-ports`. 
 
 Launch a browser (only once per session) to pick up the PAC file:
 

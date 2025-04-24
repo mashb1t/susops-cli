@@ -5,10 +5,10 @@ susops() {
   set +m
 
   # Defaults
-  local ssh_host="${SUSOPS_SSH_HOST:-pi}"
   local workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
 
   # Define file paths for storing ports, PIDs, and config
+  local ssh_hostfile="$workspace/ssh_host"
   local socks_portfile="$workspace/socks_port"
   local pac_portfile="$workspace/pac_port"
   local pacfile="$workspace/susops.pac"
@@ -54,6 +54,7 @@ susops() {
   }
 
   # Load (or generate) SOCKS and PAC ports
+  local ssh_host=$(load_port "$ssh_hostfile")
   local socks_port=$(load_port "$socks_portfile")
   local pac_port=$(load_port "$pac_portfile")
 
@@ -137,11 +138,11 @@ Commands:
   rm  [-l LOCAL_PORT]             [-r REMOTE_PORT]            [HOST]  remove hostname or port forward
   restart                                                             stop and start (preserves ports)
   start [ssh_host] [socks_port] [pac_port]                            start proxy and PAC server
-  stop                                                                stop proxy and server
+  stop  [--keep-ports]                                                stop proxy and server
   ls                                                                  list PAC hosts and remote forwards
   ps                                                                  show status, ports, and remote forwards
   reset [--force]                                                     remove all files and configs
-  test (--all|TARGET)                                                 test connectivity
+  test  (--all|TARGET)                                                 test connectivity
   chrome                                                              launch Chrome with proxy
   chrome-proxy-settings                                               open Chrome proxy settings
   firefox                                                             launch Firefox with proxy
@@ -274,12 +275,12 @@ EOF
       ;;
 
     restart)
-      susops stop true
+      susops stop --keep-ports
       susops start
       ;;
 
     start)
-      local target=${1:-$ssh_host}
+      [[ $1 ]] && ssh_host=$1 && echo "$ssh_host" > "$ssh_hostfile"
       [[ $2 ]] && socks_port=$2 && echo "$socks_port" > "$socks_portfile"
       [[ $3 ]] && pac_port=$3 && echo "$pac_port" > "$pac_portfile"
       sed -E -i '' "s#(SOCKS5 127\\.0\\.0\\.1:)[0-9]+#\\1$socks_port#g" "$pacfile"
@@ -296,10 +297,10 @@ EOF
         [[ -f "$local_conf" ]] && while read -r lp rp; do local_args+=("-L" "${lp}:localhost:${rp}"); done < "$local_conf"
 
         # Build SSH command
-        local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+        local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$ssh_host" )
         if ! command -v autossh >/dev/null 2>&1; then
           $verbose && echo "autossh not found, falling back to ssh."
-          ssh_cmd=( ssh -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+          ssh_cmd=( ssh -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$ssh_host" )
         fi
 
         $verbose && printf "Full SSH command: %s\n" "${ssh_cmd[*]}"
@@ -347,23 +348,25 @@ EOF
       ;;
 
     stop)
-      local restarting=false
-      [[ $1 == true ]] && restarting=true
+      local keep_ports=false
+      [[ $1 == '--keep-ports' ]] && keep_ports=true
       if [[ -f "$socks_pidfile" ]] && kill -0 "$(<"$socks_pidfile")" 2>/dev/null; then
         kill "$( <"$socks_pidfile")" 2>/dev/null
-        rm -f "$socks_pidfile" "$socks_portfile"
+        rm -f "$socks_pidfile"
+        ! $keep_ports && rm -f "$socks_portfile"
         align_printf "🛑 stopped" "SOCKS5 proxy:"
       else
-        [[ $restarting == false ]] && align_printf "⚠️ not running" "SOCKS5 proxy:"
+        ! $keep_ports && align_printf "⚠️ not running" "SOCKS5 proxy:"
       fi
       if [[ -f "$pac_pidfile" ]] && kill -0 "$(<"$pac_pidfile")" 2>/dev/null; then
         local pid=$(<"$pac_pidfile")
         kill "$pid" 2>/dev/null
         pkill -f "nc -l $pac_port" 2>/dev/null
-        rm -f "$pac_pidfile" "$pac_portfile"
+        rm -f "$pac_pidfile"
+        ! $keep_ports && rm -f "$pac_portfile"
         align_printf "🛑 stopped" "PAC server:"
       else
-        [[ $restarting == false ]] && align_printf "⚠️ not running" "PAC server:"
+        ! $keep_ports && align_printf "⚠️ not running" "PAC server:"
       fi
       ;;
 
