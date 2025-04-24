@@ -140,7 +140,7 @@ Commands:
   stop                                                                stop proxy and server
   ls                                                                  list PAC hosts and remote forwards
   ps                                                                  show status, ports, and remote forwards
-  reset                                                               remove all files and configs
+  reset [--force]                                                     remove all files and configs
   test (--all|TARGET)                                                 test connectivity
   chrome                                                              launch Chrome with proxy
   chrome-proxy-settings                                               open Chrome proxy settings
@@ -299,7 +299,7 @@ EOF
         local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
         if ! command -v autossh >/dev/null 2>&1; then
           $verbose && echo "autossh not found, falling back to ssh."
-          ssh_cmd=( "$ssh_command" -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
+          ssh_cmd=( ssh -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$target" )
         fi
 
         $verbose && printf "Full SSH command: %s\n" "${ssh_cmd[*]}"
@@ -393,11 +393,18 @@ EOF
       ;;
 
     reset)
+      force=false
+      if [[ "$1" == "--force" ]]; then
+        force=true
+      fi
+
       echo "This will stop susops and remove all of its configs"
-      printf "Are you sure? [y/N] "
-      read -r user_decision
-      if [[ ! $user_decision =~ ^[Yy]$ ]]; then
-        return 1
+      if ! $force; then
+        printf "Are you sure? [y/N] "
+        read -r user_decision
+        if [[ ! $user_decision =~ ^[Yy]$ ]]; then
+          return 1
+        fi
       fi
 
       susops stop true
