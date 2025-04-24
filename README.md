@@ -43,7 +43,7 @@ cd susops
 Source in your shell (add to ~/.zshrc, ~/.bashrc, etc.):
 
 ```bash
- echo "source ${PWD}/susops" >> ~/.zshrc
+ echo "source ${PWD}/susops.sh" >> ~/.zshrc
  echo 'export SUSOPS_SSH_HOST=pi # configure host in ~/.ssh/config' >> ~/.zshrc
  echo 'alias so="susops"' >> ~/.zshrc
 ```

@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 susops() {
   # Disable job control PID output
   set +m
@@ -443,3 +445,7 @@ EOF
       ;;
   esac
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  susops "$@"
+fi
