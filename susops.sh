@@ -54,7 +54,10 @@ susops() {
   }
 
   # Load (or generate) SOCKS and PAC ports
-  local ssh_host=$(load_port "$ssh_hostfile")
+  local ssh_host=""
+  if [[ -f "$ssh_hostfile" ]]; then
+    ssh_host=$(<"$ssh_hostfile")
+  fi
   local socks_port=$(load_port "$socks_portfile")
   local pac_port=$(load_port "$pac_portfile")
 
@@ -136,13 +139,13 @@ Usage: susops [-v|--verbose] COMMAND [ARGS]
 Commands:
   add [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] [HOST]  add hostname or port forward, schema FROM -> TO
   rm  [-l LOCAL_PORT]             [-r REMOTE_PORT]            [HOST]  remove hostname or port forward
-  restart                                                             stop and start (preserves ports)
   start [ssh_host] [socks_port] [pac_port]                            start proxy and PAC server
   stop  [--keep-ports]                                                stop proxy and server
+  restart                                                             stop and start (preserves ports)
   ls                                                                  list PAC hosts and remote forwards
   ps                                                                  show status, ports, and remote forwards
   reset [--force]                                                     remove all files and configs
-  test  (--all|TARGET)                                                 test connectivity
+  test  (--all|TARGET)                                                test connectivity
   chrome                                                              launch Chrome with proxy
   chrome-proxy-settings                                               open Chrome proxy settings
   firefox                                                             launch Firefox with proxy
@@ -290,6 +293,11 @@ EOF
       [[ $3 ]] && pac_port=$3 && echo "$pac_port" > "$pac_portfile"
       sed -E -i '' "s#(SOCKS5 127\\.0\\.0\\.1:)[0-9]+#\\1$socks_port#g" "$pacfile"
 
+      if [[ -z $ssh_host ]]; then
+        echo "SSH host is empty, please set as argument"
+        return 1
+      fi
+
       # Only start SOCKS proxy if not already running
       if [[ -f "$socks_pidfile" ]] && kill -0 "$(<"$socks_pidfile")" 2>/dev/null; then
         is_running "$socks_pidfile" "SOCKS5 proxy" true "$socks_port"
@@ -406,8 +414,8 @@ EOF
         force=true
       fi
 
-      echo "This will stop susops and remove all of its configs"
       if ! $force; then
+        echo "This will stop susops and remove all of its configs"
         printf "Are you sure? [y/N] "
         read -r user_decision
         if [[ ! $user_decision =~ ^[Yy]$ ]]; then
@@ -415,7 +423,7 @@ EOF
         fi
       fi
 
-      susops stop true
+      susops stop --keep-ports #--keep-ports is used to not show stop hints
       rm -rf "$workspace"
       echo "Removed all files and configs"
       ;;
