@@ -103,7 +103,7 @@ EOF
   test_entry() {
     local target=$1
     if [[ ! $target =~ ^[0-9]+$ ]]; then
-      if curl -s --max-time 5 --proxy socks5h://127.0.0.1:"$socks_port" "https://$target" >/dev/null 2>&1; then
+      if curl -s -k --max-time 5 --proxy socks5h://127.0.0.1:"$socks_port" "https://$target" >/dev/null 2>&1; then
         printf "✅ %s via SOCKS\n" "$target"; return 0
       else
         printf "❌ %s via SOCKS\n" "$target"; return 1
@@ -181,6 +181,7 @@ EOF
             echo "${lport} ${rport}" >> "$local_conf"
             echo "Registered local forward $ssh_host:${rport} -> localhost:${lport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            return 0
           fi
           ;;
 
@@ -212,6 +213,7 @@ EOF
             echo "${rport} ${lport}" >> "$remote_conf"
             echo "Registered remote forward localhost:${lport} -> $ssh_host:${rport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            return 0
           fi
           ;;
 
@@ -240,6 +242,7 @@ EOF
             sed -i '' "/^$lport /d" "$local_conf"
             echo "Removed local forward localhost:$lport"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            return 0
           else
             echo "No local forward for localhost:$lport"
             return 1
@@ -253,6 +256,7 @@ EOF
             sed -i '' "/^$rport /d" "$remote_conf"
             echo "Removed remote forward $ssh_host:$rport"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            return 0
           else
             echo "No remote forward for $ssh_host:$rport"
             return 1
@@ -265,6 +269,7 @@ EOF
           if grep -q "host === \"$host\"" "$pacfile"; then
             sed -i '' "/host === \"$host\"/d" "$pacfile"
             echo "Removed $host"
+            return 0
           else
             echo "$host not found in PAC file."
             if [[ $host =~ ^[0-9]+$ ]]; then echo "Use \"susops -l LOCAL_PORT\" OR \"susops -r REMOTE_PORT\" to remove a forwarded port"; fi
