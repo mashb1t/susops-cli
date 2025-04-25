@@ -233,3 +233,9 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
 
 - **Port in use**
   – If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
+
+- **Tests are failing**
+  – Ensure `curl` is installed and available in your PATH.
+  – Check if the SSH host is reachable and the port is open.
+  – Verify that the local service is running and accessible on the specified port.
+  - Local and remote ports are checked for actual traffic delivery with `HTTP`, SOCKS5 forwarding with `HTTPS`. If you want to use any other protocol, you can test them with e.g. `netstat` or `nc` (netcat).
