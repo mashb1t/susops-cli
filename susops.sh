@@ -381,6 +381,7 @@ EOF
       else
         ! $keep_ports && align_printf "⚠️ not running" "PAC server:"
       fi
+      return 0
       ;;
 
     ls)
