@@ -36,7 +36,7 @@ It allows you to create a SOCKS5 proxy and forward ports over SSH, making it eas
 Download the susops repository:
 
 ```bash
-git clone https://github.com/mashb1t/susops.git
+git clone https://github.com/mashb1t/susops-cli.git
 cd susops
 ```
 
