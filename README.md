@@ -239,3 +239,7 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
   – Check if the SSH host is reachable and the port is open.
   – Verify that the local service is running and accessible on the specified port.
   - Local and remote ports are checked for actual traffic delivery with `HTTP`, SOCKS5 forwarding with `HTTPS`. If you want to use any other protocol, you can test them with e.g. `netstat` or `nc` (netcat).
+
+## License
+
+MIT © 2025 Manuel Schmid — see [LICENSE](https://github.com/mashb1t/SusOps-CLI/blob/main/LICENSE.txt).
