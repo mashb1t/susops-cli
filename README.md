@@ -82,7 +82,7 @@ so restart
 ```
 
 > [!NOTE]  
-> You only have to set the SSH host once. Ports will be different each time you start the proxy, except you explicitly set them on with e.g. `so start 1080 1081` or stop via `so stop --keep-ports`. 
+> You only have to set the SSH host once. Ports will be different each time you start the proxy, except you explicitly set them with e.g. `so start 1080 1081` or stop via `so stop --keep-ports`. 
 
 Launch a browser (only once per session) to pick up the PAC file:
 
@@ -101,7 +101,7 @@ so firefox
 ## Local Port Forwarding
 
 ### What it does
-- **Forwards a remote service** (e.g. `remote_host:8000`) to a local port on your machine.
+- **Forwards a remote port** (e.g. `remote_host:8000`) to a local port on your machine.
 - Makes the remote app reachable at `localhost:<local_port>` without configuring remote firewall rules.
 - Useful for developing against or inspecting remote services as if they were running locally.
 
@@ -124,7 +124,7 @@ so restart
 ## Remote Port Forwarding
 
 ### What it does
-- **Exposes a local service** (e.g. `localhost:3000`) on the remote SSH server’s interface.
+- **Forwards a local port** (e.g. `localhost:3000`) on the remote SSH server.
 - Makes your local app reachable at `remote_host:<remote_port>` without opening firewall holes.
 - Useful for accessing local services from remote locations, e.g. as target in a reverse proxy on the remote server.
 
