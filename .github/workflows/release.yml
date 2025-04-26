@@ -12,16 +12,19 @@ jobs:
       - name: Checkout default branch
         uses: actions/checkout@v4
 
-      - name: Calculate SHA256
-        id: sha
-        run: echo "sum=$(shasum -a 256 susops.sh | awk '{print $1}')" >> $GITHUB_OUTPUT
-
       - name: Determine version
         id: version
         run: |
           tag="${{ github.event.release.tag_name }}"
           version="${tag#v}"
           echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Calculate SHA256
+        id: sha
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          SHA=$(curl -L https://github.com/mashb1t/susops-cli/archive/refs/tags/${VERSION}.tar.gz | shasum -a 256 | awk '{print $1}')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Configure Git actions user
         run: |
@@ -34,8 +37,8 @@ jobs:
           brew bump-formula-pr \
             mashb1t/susops/susops \
             --version "${{ steps.version.outputs.version }}" \
-            --url "https://github.com/mashb1t/susops-cli/archive/refs/tags/v${{ steps.version.outputs.version }}.tar.gz" \
-            --sha256 "${{ steps.sha.outputs.sum }}" \
-            --no-browse --no-fork --no-audit
+            --url "https://github.com/mashb1t/susops-cli/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz" \
+            --sha256 "${{ steps.sha.outputs.sha }}" \
+            --no-audit --no-browse --no-fork
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.BREW_PR_TOKEN }}
