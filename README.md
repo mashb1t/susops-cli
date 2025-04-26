@@ -40,6 +40,13 @@ brew tap mashb1t/susops
 brew install susops
 ```
 
+For updating, simply run these commands:
+
+```bash
+brew update
+brew upgrade susops
+```
+
 ### OR Install manually
 
 Download the susops repository:
