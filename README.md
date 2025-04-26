@@ -258,4 +258,4 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
 
 ## License
 
-MIT © 2025 Manuel Schmid — see [LICENSE](https://github.com/mashb1t/SusOps-CLI/blob/main/LICENSE.txt).
+MIT © 2025 Manuel Schmid — see [LICENSE](LICENSE).
