@@ -12,6 +12,10 @@ jobs:
       - name: Checkout default branch
         uses: actions/checkout@v4
 
+      - name: Calculate SHA256
+        id: sha
+        run: echo "sum=$(shasum -a 256 dist/SusOps.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+
       - name: Determine version
         id: version
         run: |
@@ -29,7 +33,9 @@ jobs:
           brew tap mashb1t/susops
           brew bump-formula-pr \
             mashb1t/susops/susops \
-            --version ${{ steps.version.outputs.version }} \
-            --no-browse --no-fork
+            --version "${{ steps.version.outputs.version }}" \
+            --url "https://github.com/mashb1t/susops-cli/archive/refs/tags/v${{ steps.version.outputs.version }}.zip" \
+            --sha256 "${{ steps.sha.outputs.sum }}" \
+            --no-browse --no-fork --no-audit
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.BREW_PR_TOKEN }}
