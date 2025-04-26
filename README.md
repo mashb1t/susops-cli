@@ -14,7 +14,7 @@ It allows you to create a SOCKS5 proxy and forward ports over SSH, making it eas
 | Isolated “research tab”          | SOCKS5 Proxy      | Launch a browser profile through `so chrome`; keeps cookies and DNS separate from main profile.              |
 | Access remote database           | Local Forwarding  | Forward a remote database port (e.g. MySQL `3306`) to `localhost:3306` for local querying and tooling.       |
 | Develop against remote services  | Local Forwarding  | Map a remote web service port (e.g. `:8080`) to your machine so you can use local debuggers and live-reload. |
-| Secure remote desktop**          | Local Forwarding  | Tunnel RDP/VNC (`3389`) or SSH to `localhost:3389` for encrypted access to your remote workstation.          |
+| Secure remote desktop          | Local Forwarding  | Tunnel RDP/VNC (`3389`) or SSH to `localhost:3389` for encrypted access to your remote workstation.          |
 | Geo‑testing APIs                 | Remote Forwarding | Map `api.example.com` to a server in another region via reverse tunnel—no full VPN required.                 |
 | Remote IoT / NAS management      | Remote Forwarding | Expose your local device’s UI at `remote_host:<port>` without opening extra firewall holes.                  |
 | Reverse proxying to localhost    | Remote Forwarding | Make ports of local services in development available for a reverse proxy on the remote server (proxy pass). |
