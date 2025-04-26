@@ -33,6 +33,15 @@ It allows you to create a SOCKS5 proxy and forward ports over SSH, making it eas
 
 ## Setup
 
+### 1. Install via Homebrew
+
+```bash
+brew tap mashb1t/susops
+brew install susops
+```
+
+### OR Install manually
+
 Download the susops repository:
 
 ```bash
