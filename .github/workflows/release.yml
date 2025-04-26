@@ -30,12 +30,13 @@ jobs:
 
       - name: Bump Homebrew Cask
         run: |
+          brew untap mashb1t/susops
           brew tap mashb1t/susops
           brew bump-formula-pr \
             mashb1t/susops/susops \
             --version "${{ steps.version.outputs.version }}" \
             --url "https://github.com/mashb1t/susops-cli/archive/refs/tags/v${{ steps.version.outputs.version }}.zip" \
             --sha256 "${{ steps.sha.outputs.sum }}" \
-            --no-browse --no-fork --no-audit
+            --no-browse --no-fork
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.BREW_PR_TOKEN }}
