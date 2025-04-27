@@ -133,7 +133,7 @@ EOF
   }
 
   case $cmd in
-    help|-h)
+    help|--help|-h)
       cat << EOF
 Usage: susops [-v|--verbose] COMMAND [ARGS]
 Commands:
@@ -149,6 +149,7 @@ Commands:
   chrome                                                              launch Chrome with proxy
   chrome-proxy-settings                                               open Chrome proxy settings
   firefox                                                             launch Firefox with proxy
+  help|--help|-h                                                      show this help message
 Options:
   -v, --verbose                                                       enable verbose output
 EOF
