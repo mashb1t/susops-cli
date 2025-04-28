@@ -136,8 +136,8 @@ EOF
     help|--help|-h)
       cat << EOF
 Usage: susops [-v|--verbose] COMMAND [ARGS]
-Commands:
-  add [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] [HOST]  add hostname or port forward, schema FROM -> TO
+Commands: .
+  add [-l LOCAL_PORT REMOTE_PORT] [-r REMOTE_PORT LOCAL_PORT] [HOST]  add hostname or port forward, schema source → target
   rm  [-l LOCAL_PORT]             [-r REMOTE_PORT]            [HOST]  remove hostname or port forward
   start [ssh_host] [socks_port] [pac_port]                            start proxy and PAC server
   stop  [--keep-ports]                                                stop proxy and server
@@ -158,12 +158,12 @@ EOF
     add)
       case "$1" in
         -l)
-          local rport=$2 lport=$3
+          local lport=$2 rport=$3
           [[ $rport && $lport ]] || { echo "Usage: susops add -l REMOTE_PORT LOCAL_PORT"; echo "Map a port from a remote server to your localhost"; return 1; }
 
           # 1) Exact rule must not already exist locally
           if grep -q "^${lport} ${rport}\$" "$local_conf" 2>/dev/null; then
-            echo "Local forward $ssh_host:${rport} -> localhost:${lport} already registered"
+            echo "Local forward localhost:${lport} → $ssh_host:${rport} already registered"
             return 1
 
           # 2) LOCAL_PORT must not already be used
@@ -171,51 +171,51 @@ EOF
             echo "Local port ${lport} is already the source of a local forward"
             return 1
 
-          # 3) LOCAL_PORT must not be targeted by any remote forward
+          # 3) LOCAL_PORT must not be targeted by any remote forward (loopback prevention)
           elif grep -q "^[0-9]\+ ${lport}\$" "$remote_conf" 2>/dev/null; then
             echo "Local port ${lport} is already the target of a remote forward"
             return 1
 
-          # 4) REMOTE_PORT must not be the source of any remote forward
+          # 4) REMOTE_PORT must not be the source of any remote forward (loopback prevention)
           elif grep -q "^${rport} " "$remote_conf" 2>/dev/null; then
             echo "Remote port ${rport} is already the source of a remote forward"
             return 1
 
           else
             echo "${lport} ${rport}" >> "$local_conf"
-            echo "Registered local forward $ssh_host:${rport} -> localhost:${lport}"
+            echo "Registered local forward localhost:${lport} → $ssh_host:${rport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
             return 0
           fi
           ;;
 
         -r)
-          local lport=$2 rport=$3
+          local rport=$2 lport=$3
           [[ $lport && $rport ]] || { echo "Usage: susops add -r LOCAL_PORT REMOTE_PORT"; echo "Map a port from your localhost to a remote server"; return 1; }
 
           # 1) Exact rule must not already exist remotely
           if grep -q "^${rport} ${lport}\$" "$remote_conf" 2>/dev/null; then
-            echo "Remote forward localhost:${lport} -> $ssh_host:${rport} already registered"
+            echo "Remote forward $ssh_host:${rport} → localhost:${lport} already registered"
             return 1
 
           # 2) REMOTE_PORT must not already be used
           elif grep -q "^${rport} " "$remote_conf" 2>/dev/null; then
-            echo "Remote port ${rport} is already registered"
+            echo "Remote port ${rport} is already the source of a remote forward"
             return 1
 
-          # 3) REMOTE_PORT must not be targeted by any local forward
+          # 3) REMOTE_PORT must not be targeted by any local forward  (loopback prevention)
           elif grep -q "^[0-9]\+ ${rport}\$" "$local_conf" 2>/dev/null; then
             echo "Remote port ${rport} is already the target of a local forward"
             return 1
 
-          # 4) LOCAL_PORT must not be the source of a local forward
+          # 4) LOCAL_PORT must not be the source of a local forward (loopback prevention)
           elif grep -q "^${lport} " "$local_conf" 2>/dev/null; then
             echo "Local port ${lport} is already the source of a local forward"
             return 1
 
           else
             echo "${rport} ${lport}" >> "$remote_conf"
-            echo "Registered remote forward localhost:${lport} -> $ssh_host:${rport}"
+            echo "Registered remote forward $ssh_host:${rport} → localhost:${lport}"
             is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
             return 0
           fi
@@ -303,18 +303,18 @@ EOF
       if [[ -f "$socks_pidfile" ]] && kill -0 "$(<"$socks_pidfile")" 2>/dev/null; then
         is_running "$socks_pidfile" "SOCKS5 proxy" true "$socks_port"
       else
-        # Build remote tunnel arguments
-        local remote_args=()
-        [[ -f "$remote_conf" ]] && while read -r rp lp; do remote_args+=("-R" "${rp}:localhost:${lp}"); done < "$remote_conf"
         # Build local forward arguments
         local local_args=()
         [[ -f "$local_conf" ]] && while read -r lp rp; do local_args+=("-L" "${lp}:localhost:${rp}"); done < "$local_conf"
+        # Build remote tunnel arguments
+        local remote_args=()
+        [[ -f "$remote_conf" ]] && while read -r rp lp; do remote_args+=("-R" "${rp}:localhost:${lp}"); done < "$remote_conf"
 
         # Build SSH command
-        local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$ssh_host" )
+        local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
         if ! command -v autossh >/dev/null 2>&1; then
           $verbose && echo "autossh not found, falling back to ssh."
-          ssh_cmd=( ssh -N -T -D "$socks_port" "${remote_args[@]}" "${local_args[@]}" "$ssh_host" )
+          ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
         fi
 
         $verbose && printf "Full SSH command: %s\n" "${ssh_cmd[*]}"
@@ -390,19 +390,19 @@ EOF
       if grep -q 'host ===' "$pacfile"; then
         sed -E -n 's/.*host === "([^"]+)".*/→ \1/p' "$pacfile"
       else
-        echo "→ None"
+        echo "- None"
       fi
       echo "Local forwards:"
       if [[ -s "$local_conf" ]]; then
-        while read -r lp rp; do echo "→ $ssh_host:$rp -> localhost:$lp"; done < "$local_conf"
+        while read -r lp rp; do echo "- localhost:$lp → $ssh_host:$rp"; done < "$local_conf"
       else
-        echo "→ None"
+        echo "- None"
       fi
       echo "Remote forwards:"
       if [[ -s "$remote_conf" ]]; then
-        while read -r rp lp; do echo "→ localhost:$lp -> $ssh_host:$rp"; done < "$remote_conf"
+        while read -r rp lp; do echo "- $ssh_host:$rp → localhost:$lp"; done < "$remote_conf"
       else
-        echo "→ None"
+        echo "- None"
       fi
       ;;
 
