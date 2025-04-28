@@ -241,19 +241,23 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
 </details>
 
 ### Troubleshooting
-- **“Connection refused”** on the remote port
-  – Make sure your local service is listening on the specified `LOCAL_PORT`.
-  – Ensure the remote server’s sshd daemon config allows remote port forwarding.
-  Check `/etc/ssh/sshd_config` for `AllowTcpForwarding yes` (default `yes`) and `GatewayPorts yes` or `GatewayPorts clientspecified` (default `no`).
-  Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
+
+- **Command `susops` / `so` not found**
+  - You may have installed the cask first. Run ``brew link susops`` to link the commands manually.
+
+- **“Connection refused”** on the remote port 
+  - Make sure your local service is listening on the specified `LOCAL_PORT`. 
+  - Ensure the remote server’s sshd daemon config allows remote port forwarding.
+    Check `/etc/ssh/sshd_config` for `AllowTcpForwarding yes` (default `yes`) and `GatewayPorts yes` or `GatewayPorts clientspecified` (default `no`).
+    Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 - **Port in use**
-  – If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
+  - If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
 
 - **Tests are failing**
-  – Ensure `curl` is installed and available in your PATH.
-  – Check if the SSH host is reachable and the port is open.
-  – Verify that the local service is running and accessible on the specified port.
+  - Ensure `curl` is installed and available in your PATH.
+  - Check if the SSH host is reachable and the port is open.
+  - Verify that the local service is running and accessible on the specified port.
   - Local and remote ports are checked for actual traffic delivery with `HTTP`, SOCKS5 forwarding with `HTTPS`. If you want to use any other protocol, you can test them with e.g. `netstat` or `nc` (netcat).
 
 ## License
