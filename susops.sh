@@ -226,6 +226,7 @@ EOF
           [[ $host ]] || { echo "Usage: add [HOST] [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] "; echo "Ports are mapped in schema FROM -> TO"; return 1; }
           if grep -q "host === \"$host\"" "$pacfile"; then
             echo "$host is already in PAC file"
+            return 1
           else
             awk -v h="$host" '/return "DIRECT"/ { print "  if (host === \""h"\" || dnsDomainIs(host, \"."h"\")) return \"SOCKS5 127.0.0.1:'$socks_port'\";" }1' \
               "$pacfile" > "$workspace/tmp.pac" && mv "$workspace/tmp.pac" "$pacfile"
