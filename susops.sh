@@ -387,7 +387,11 @@ EOF
 
     ls)
       echo "PAC hosts:"
-      sed -n 's/.*host === "\([^"]*\)".*/→ \1/p' "$pacfile" || echo "→ None"
+      if grep -q 'host ===' "$pacfile"; then
+        sed -E -n 's/.*host === "([^"]+)".*/→ \1/p' "$pacfile"
+      else
+        echo "→ None"
+      fi
       echo "Local forwards:"
       if [[ -s "$local_conf" ]]; then
         while read -r lp rp; do echo "→ $ssh_host:$rp -> localhost:$lp"; done < "$local_conf"
