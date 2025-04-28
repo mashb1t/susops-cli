@@ -163,7 +163,7 @@ EOF
 
           # 1) Exact rule must not already exist locally
           if grep -q "^${lport} ${rport}\$" "$local_conf" 2>/dev/null; then
-            echo "Local forward localhost:${lport} → $ssh_host:${rport} already registered"
+            echo "Local forward localhost:${lport} → $ssh_host:${rport} is already registered"
             return 1
 
           # 2) LOCAL_PORT must not already be used
@@ -184,7 +184,7 @@ EOF
           else
             echo "${lport} ${rport}" >> "$local_conf"
             echo "Registered local forward localhost:${lport} → $ssh_host:${rport}"
-            is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            is_running "$socks_pidfile" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -195,7 +195,7 @@ EOF
 
           # 1) Exact rule must not already exist remotely
           if grep -q "^${rport} ${lport}\$" "$remote_conf" 2>/dev/null; then
-            echo "Remote forward $ssh_host:${rport} → localhost:${lport} already registered"
+            echo "Remote forward $ssh_host:${rport} → localhost:${lport} is already registered"
             return 1
 
           # 2) REMOTE_PORT must not already be used
@@ -216,7 +216,7 @@ EOF
           else
             echo "${rport} ${lport}" >> "$remote_conf"
             echo "Registered remote forward $ssh_host:${rport} → localhost:${lport}"
-            is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            is_running "$socks_pidfile" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -225,11 +225,11 @@ EOF
           local host=$1
           [[ $host ]] || { echo "Usage: add [HOST] [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] "; echo "Ports are mapped in schema FROM -> TO"; return 1; }
           if grep -q "host === \"$host\"" "$pacfile"; then
-            echo "$host already in PAC"
+            echo "$host is already in PAC file"
           else
             awk -v h="$host" '/return "DIRECT"/ { print "  if (host === \""h"\" || dnsDomainIs(host, \"."h"\")) return \"SOCKS5 127.0.0.1:'$socks_port'\";" }1' \
               "$pacfile" > "$workspace/tmp.pac" && mv "$workspace/tmp.pac" "$pacfile"
-            echo "Added $host to PAC"
+            echo "Added $host to PAC file"
             is_running "$socks_pidfile" "SOCKS5 proxy" && test_entry "$host"
             return 0
           fi
@@ -245,7 +245,7 @@ EOF
           if grep -q "^$lport " "$local_conf" 2>/dev/null; then
             sed -i '' "/^$lport /d" "$local_conf"
             echo "Removed local forward localhost:$lport"
-            is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            is_running "$socks_pidfile" && echo "Restart proxy to apply"
             return 0
           else
             echo "No local forward for localhost:$lport"
@@ -259,7 +259,7 @@ EOF
           if grep -q "^$rport " "$remote_conf" 2>/dev/null; then
             sed -i '' "/^$rport /d" "$remote_conf"
             echo "Removed remote forward $ssh_host:$rport"
-            is_running "$socks_pidfile" && echo "Run \"susops restart\" to apply"
+            is_running "$socks_pidfile" && echo "Restart proxy to apply"
             return 0
           else
             echo "No remote forward for $ssh_host:$rport"
@@ -272,10 +272,11 @@ EOF
           [[ $host ]] || { echo "Usage: rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]"; return 1; }
           if grep -q "host === \"$host\"" "$pacfile"; then
             sed -i '' "/host === \"$host\"/d" "$pacfile"
-            echo "Removed $host"
+            echo "Removed $host from PAC file"
+            is_running "$socks_pidfile" && echo "Restart proxy to apply"
             return 0
           else
-            echo "$host not found in PAC file."
+            echo "$host not found in PAC file"
             if [[ $host =~ ^[0-9]+$ ]]; then echo "Use \"susops -l LOCAL_PORT\" OR \"susops -r REMOTE_PORT\" to remove a forwarded port"; fi
             return 1
           fi
@@ -313,7 +314,7 @@ EOF
         # Build SSH command
         local ssh_cmd=( autossh -M 0 -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
         if ! command -v autossh >/dev/null 2>&1; then
-          $verbose && echo "autossh not found, falling back to ssh."
+          $verbose && echo "autossh not found, falling back to ssh"
           ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
         fi
 
