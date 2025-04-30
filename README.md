@@ -1,3 +1,7 @@
+<p align="center">
+    <img src="icon.png" alt="Menu" height="200" />
+</p>
+
 # SusOps (aka. so) - Simple SSH Proxy Operations
 (a little sus from the perspective of a SecOps team)
 
