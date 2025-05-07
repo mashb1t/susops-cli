@@ -5,17 +5,21 @@ susops() {
   set +m
 
   # Defaults
-  local workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
+  readonly workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
 
-  # Define file paths for storing ports, PIDs, and config
-  local ssh_hostfile="$workspace/ssh_host"
-  local socks_portfile="$workspace/socks_port"
-  local pac_portfile="$workspace/pac_port"
-  local pacfile="$workspace/susops.pac"
-  local socks_pidfile="$workspace/socks.pid"
-  local pac_pidfile="$workspace/pac.pid"
-  local remote_conf="$workspace/remote.conf"
-  local local_conf="$workspace/local.conf"
+  # Define file paths for storing ports and config
+  readonly ssh_hostfile="$workspace/ssh_host"
+  readonly socks_portfile="$workspace/socks_port"
+  readonly pac_portfile="$workspace/pac_port"
+  readonly pacfile="$workspace/susops.pac"
+  readonly remote_conf="$workspace/remote.conf"
+  readonly local_conf="$workspace/local.conf"
+
+  # Define process names for easier identification
+  readonly SUSOPS_SSH_PROCESS_NAME="susops-ssh"
+  readonly SUSOPS_PAC_LOOP_PROCESS_NAME="susops-pac-loop"
+  readonly SUSOPS_PAC_NC_PROCESS_NAME="susops-pac-nc"
+  readonly SUSOPS_PAC_UNIFIED_PROCESS_NAME="susops-pac"
 
   # Verbosity toggle for debugging
   local verbose=false
@@ -58,8 +62,9 @@ susops() {
   if [[ -f "$ssh_hostfile" ]]; then
     ssh_host=$(<"$ssh_hostfile")
   fi
-  local socks_port=$(load_port "$socks_portfile")
-  local pac_port=$(load_port "$pac_portfile")
+  local socks_port pac_port
+  socks_port=$(load_port "$socks_portfile")
+  pac_port=$(load_port "$pac_portfile")
 
   # Create basic PAC file if missing
   [[ -f "$pacfile" ]] || cat > "$pacfile" << 'EOF'
@@ -76,32 +81,40 @@ EOF
 
   # Helper: check if a service is running based on PID file
   is_running() {
-    local pidfile=$1 description=$2 print=false port=$4 additional=$5
-    [[ $pidfile ]] || return 1
-    [[ $description ]] || description="Service"
-    [[ $3 == true ]] && print=true
+    local proc_name="$1"
+    local description="${2:-Service}"
+    local print_flag="$3"
+    local port="$4"
+    local additional="$5"
 
-    if [[ -f "$pidfile" ]]; then
-      local pid; pid=$(<"$pidfile")
-      if kill -0 "$pid" 2>/dev/null; then
-        local pid_string="PID $pid"
-        if [[ $port ]]; then
-          local nc_pid=$(pgrep -f "nc -l $port")
-          if [[ $nc_pid ]]; then
-            pid_string="PIDs $pid & $nc_pid"
-          fi
-        fi
-        if [[ $additional ]]; then
-          $print && align_printf "✅ running (%s, port %s, %s)" "$description:" "$pid_string" "$port" "$additional"
-        else
-          $print && align_printf "✅ running (%s, port %s)" "$description:" "$pid_string" "$port"
-        fi
-        return 0
+    # find exact-match PIDs (newline-separated)
+    pids=$(pgrep -a -- "$proc_name" 2>/dev/null || :)
+
+    if [ -n "$pids" ]; then
+      pid_list=$(printf "%s" "$pids" | tr '\n' ' ' | sed 's/ $//')
+      count=$(wc -w <<< "$pid_list")
+      if [ "$count" -gt 1 ]; then
+        pid_string="PIDs $pid_list"
+      else
+        pid_string="PID $pid_list"
       fi
+
+      # print if requested
+      if [ "$print_flag" = true ]; then
+        if [ -n "$additional" ]; then
+          align_printf "✅ running (%s, port %s, %s)" "$description:" "$pid_string" "$port" "$additional"
+        else
+          align_printf "✅ running (%s, port %s)" "$description:" "$pid_string" "$port"
+        fi
+      fi
+      return 0
     fi
-    $print && align_printf "⚠️ not running" "$description:"
+
+    # not running
+    [ "$print_flag" = true ] && align_printf "⚠️ not running" "$description:"
     return 1
   }
+
 
   test_entry() {
     local target=$1
@@ -131,6 +144,34 @@ EOF
       fi
     fi
   }
+
+  stop_by_name() {
+    local proc_name="$1"
+    local label="$2"
+    local keep_ports="${3:-false}"
+    local pids
+
+    # find every exact-match PID
+    pids=$(pgrep -a -- "$proc_name")
+
+    if [ -n "$pids" ]; then
+      # kill any that are still alive
+      for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+          kill "$pid" 2>/dev/null
+        fi
+      done
+
+      # clean up port file unless keep_ports is true
+      ! $keep_ports && rm -f "$socks_portfile"
+
+      align_printf "🛑 stopped" "$label"
+    else
+      ! $keep_ports && align_printf "⚠️ not running" "$label"
+    fi
+  }
+
+
 
   case $cmd in
     help|--help|-h)
@@ -184,7 +225,7 @@ EOF
           else
             echo "${lport} ${rport}" >> "$local_conf"
             echo "Registered local forward localhost:${lport} → $ssh_host:${rport}"
-            is_running "$socks_pidfile" && echo "Restart proxy to apply"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -216,7 +257,7 @@ EOF
           else
             echo "${rport} ${lport}" >> "$remote_conf"
             echo "Registered remote forward $ssh_host:${rport} → localhost:${lport}"
-            is_running "$socks_pidfile" && echo "Restart proxy to apply"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -231,7 +272,7 @@ EOF
             awk -v h="$host" '/return "DIRECT"/ { print "  if (host === \""h"\" || dnsDomainIs(host, \"."h"\")) return \"SOCKS5 127.0.0.1:'$socks_port'\";" }1' \
               "$pacfile" > "$workspace/tmp.pac" && mv "$workspace/tmp.pac" "$pacfile"
             echo "Added $host to PAC file"
-            is_running "$socks_pidfile" "SOCKS5 proxy" && test_entry "$host"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" && test_entry "$host"
             return 0
           fi
           ;;
@@ -246,7 +287,7 @@ EOF
           if grep -q "^$lport " "$local_conf" 2>/dev/null; then
             sed -i '' "/^$lport /d" "$local_conf"
             echo "Removed local forward localhost:$lport"
-            is_running "$socks_pidfile" && echo "Restart proxy to apply"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" && echo "Restart proxy to apply"
             return 0
           else
             echo "No local forward for localhost:$lport"
@@ -260,7 +301,7 @@ EOF
           if grep -q "^$rport " "$remote_conf" 2>/dev/null; then
             sed -i '' "/^$rport /d" "$remote_conf"
             echo "Removed remote forward $ssh_host:$rport"
-            is_running "$socks_pidfile" && echo "Restart proxy to apply"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" && echo "Restart proxy to apply"
             return 0
           else
             echo "No remote forward for $ssh_host:$rport"
@@ -274,7 +315,7 @@ EOF
           if grep -q "host === \"$host\"" "$pacfile"; then
             sed -i '' "/host === \"$host\"/d" "$pacfile"
             echo "Removed $host from PAC file"
-            is_running "$socks_pidfile" && echo "Restart proxy to apply"
+            is_running "$SUSOPS_SSH_PROCESS_NAME" && echo "Restart proxy to apply"
             return 0
           else
             echo "$host not found in PAC file"
@@ -302,8 +343,8 @@ EOF
       fi
 
       # Only start SOCKS proxy if not already running
-      if [[ -f "$socks_pidfile" ]] && kill -0 "$(<"$socks_pidfile")" 2>/dev/null; then
-        is_running "$socks_pidfile" "SOCKS5 proxy" true "$socks_port"
+      if pgrep -f "$SUSOPS_SSH_PROCESS_NAME" >/dev/null; then
+        is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" true "$socks_port"
       else
         # Build local forward arguments
         local local_args=()
@@ -319,45 +360,44 @@ EOF
           ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
         fi
 
-        $verbose && printf "Full SSH command: %s\n" "${ssh_cmd[*]}"
-        nohup "${ssh_cmd[@]}" </dev/null >/dev/null 2>&1 &
-        echo $! > "$socks_pidfile"
+        $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $SUSOPS_SSH_PROCESS_NAME ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
+        nohup bash -c "exec -a $SUSOPS_SSH_PROCESS_NAME ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
 
-        align_printf "🚀 started (PID %s, port %s)" "SOCKS5 proxy:" "$(<"$socks_pidfile")" "$socks_port"
+        align_printf "🚀 started (PID %s, port %s)" "SOCKS5 proxy:" "$!" "$socks_port"
       fi
 
       # Only start PAC server if not already running
-      if [[ -f "$pac_pidfile" ]] && kill -0 "$(<"$pac_pidfile")" 2>/dev/null; then
-        is_running "$pac_pidfile" "PAC server" true "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
+      if pgrep -a "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" >/dev/null; then
+        is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
       else
         length=$(wc -c <"$pacfile")
-        nohup bash -c "
-          while true; do
+        nohup bash -c "exec -a $SUSOPS_PAC_LOOP_PROCESS_NAME bash -c \"while true; do
             {
               printf 'HTTP/1.1 200 OK\r\n'
               printf 'Content-Type: application/x-ns-proxy-autoconfig\r\n'
-              printf 'Content-Length: %s\r\n' \"$length\"
+              printf 'Content-Length: %s\r\n' $length
               printf 'Connection: close\r\n'
               printf '\r\n'
-              cat \"$pacfile\"
-            } | nc -l \"$pac_port\"
-          done
-        " </dev/null >/dev/null 2>&1 &
-        echo $! > "$pac_pidfile"
+              cat \\\"$pacfile\\\"
+            } | exec -a $SUSOPS_PAC_NC_PROCESS_NAME nc -l $pac_port
+        done\"" </dev/null >/dev/null 2>&1 &
 
+        local pac_pid=$!
+
+        # ensure
         local max_wait=5
         local interval=0.1
         steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
         for ((i=0; i<steps; i++)); do
-          if nc_pid=$(pgrep -f "nc -l $pac_port"); then
-            align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$(<"$pac_pidfile")" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
+          if nc_pid=$(pgrep -f "$SUSOPS_PAC_NC_PROCESS_NAME"); then
+            align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
             break
           fi
-          $verbose && printf "Waiting for PAC server to start... (%d/%d)\n" "$i+1" "$steps"
+          $verbose && printf "Waiting for PAC server to start... (%d/%d)\n" $((i + 1)) "$steps"
           sleep "$interval"
         done
         if [[ $i -ge $steps ]]; then
-          align_printf "⚠️ partially started (PID %s, port %s, URL %s)" "PAC server:" "$(<"$pac_pidfile")" "$pac_port" "http://localhost:$pac_port/susops.pac"
+          align_printf "⚠️ partially started (PID %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
           return 1
         fi
       fi
@@ -366,24 +406,8 @@ EOF
     stop)
       local keep_ports=false
       [[ $1 == '--keep-ports' ]] && keep_ports=true
-      if [[ -f "$socks_pidfile" ]] && kill -0 "$(<"$socks_pidfile")" 2>/dev/null; then
-        kill "$( <"$socks_pidfile")" 2>/dev/null
-        rm -f "$socks_pidfile"
-        ! $keep_ports && rm -f "$socks_portfile"
-        align_printf "🛑 stopped" "SOCKS5 proxy:"
-      else
-        ! $keep_ports && align_printf "⚠️ not running" "SOCKS5 proxy:"
-      fi
-      if [[ -f "$pac_pidfile" ]] && kill -0 "$(<"$pac_pidfile")" 2>/dev/null; then
-        local pid=$(<"$pac_pidfile")
-        kill "$pid" 2>/dev/null
-        pkill -f "nc -l $pac_port" 2>/dev/null
-        rm -f "$pac_pidfile"
-        ! $keep_ports && rm -f "$pac_portfile"
-        align_printf "🛑 stopped" "PAC server:"
-      else
-        ! $keep_ports && align_printf "⚠️ not running" "PAC server:"
-      fi
+      stop_by_name "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy:" $keep_ports
+      stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server:" $keep_ports
       return 0
       ;;
 
@@ -409,9 +433,9 @@ EOF
       ;;
 
     ps)
-      is_running "$socks_pidfile" "SOCKS5 proxy" true "$socks_port"
+      is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" true "$socks_port"
       result_socks=$?
-      is_running "$pac_pidfile" "PAC server" true "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
+      is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
       result_pac=$?
       return $(( result_socks + result_pac ))
       ;;
@@ -438,7 +462,7 @@ EOF
 
     test)
       [[ $1 ]] || { echo "Usage: susops test (--all|TARGET)"; return 1; }
-      is_running "$socks_pidfile" "SOCKS5 proxy" || { align_printf "⚠️ not running, use \"susops start\" first" "SOCKS5 proxy:"; return 1; }
+      is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" || { align_printf "⚠️ not running, use \"susops start\" first" "SOCKS5 proxy:"; return 1; }
       if [[ $1 == --all ]]; then
         sed -n 's/.*host === "\([^"]*\)".*/\1/p' "$pacfile" | while read -r d; do test_entry "$d"; done
 
