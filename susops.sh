@@ -171,7 +171,37 @@ EOF
     fi
   }
 
+  validate_port_in_range() {
+    # $1: port
+    [[ $1 =~ ^[0-9]+$ && $1 -ge 1 && $1 -le 65535 ]]
+  }
 
+  # Generic checks against a config file
+  check_exact_rule() {
+    # $1: src port, $2: dst port, $3: config file
+    grep -q "^${1} ${2}$" "$3" 2>/dev/null
+  }
+
+  check_port_source() {
+    # $1: port, $2: config file
+    grep -q "^${1} " "$2" 2>/dev/null
+  }
+
+  check_port_target() {
+    # $1: port, $2: config file
+    grep -q "^[0-9]\+ ${1}$" "$2" 2>/dev/null
+  }
+
+  # Check if a port is in use on localhost or remote host
+  check_port_in_use() {
+    # $1: port, $2 (optional): host (defaults to localhost)
+    local port=$1 host=${2:-localhost}
+    if [[ "$host" == localhost ]]; then
+      lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+    else
+      ssh "$host" lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+    fi
+  }
 
   case $cmd in
     help|--help|-h)
@@ -200,28 +230,33 @@ EOF
       case "$1" in
         -l)
           local lport=$2 rport=$3
-          [[ $rport && $lport ]] || { echo "Usage: susops add -l REMOTE_PORT LOCAL_PORT"; echo "Map a port from a remote server to your localhost"; return 1; }
+          [[ $lport && $rport ]] || {
+            echo "Usage: susops add -l REMOTE_PORT LOCAL_PORT"
+            echo "Map a port from a remote server to your localhost"
+            return 1
+          }
 
-          # 1) Exact rule must not already exist locally
-          if grep -q "^${lport} ${rport}\$" "$local_conf" 2>/dev/null; then
+          if ! validate_port_in_range "$lport"; then
+            echo "LOCAL_PORT must be a valid port in range 1 to 65535"
+            return 1
+          elif ! validate_port_in_range "$rport"; then
+            echo "REMOTE_PORT must be a valid port in range 1 to 65535"
+            return 1
+          elif check_exact_rule "$lport" "$rport" "$local_conf"; then
             echo "Local forward localhost:${lport} → $ssh_host:${rport} is already registered"
             return 1
-
-          # 2) LOCAL_PORT must not already be used
-          elif grep -q "^${lport} " "$local_conf" 2>/dev/null; then
+          elif check_port_source "$lport" "$local_conf"; then
             echo "Local port ${lport} is already the source of a local forward"
             return 1
-
-          # 3) LOCAL_PORT must not be targeted by any remote forward (loopback prevention)
-          elif grep -q "^[0-9]\+ ${lport}\$" "$remote_conf" 2>/dev/null; then
+          elif check_port_target "$lport" "$remote_conf"; then
             echo "Local port ${lport} is already the target of a remote forward"
             return 1
-
-          # 4) REMOTE_PORT must not be the source of any remote forward (loopback prevention)
-          elif grep -q "^${rport} " "$remote_conf" 2>/dev/null; then
+          elif check_port_source "$rport" "$remote_conf"; then
             echo "Remote port ${rport} is already the source of a remote forward"
             return 1
-
+          elif check_port_in_use "$lport"; then
+            echo "Local port $lport is already in use on localhost"
+            return 1
           else
             echo "${lport} ${rport}" >> "$local_conf"
             echo "Registered local forward localhost:${lport} → $ssh_host:${rport}"
@@ -232,28 +267,33 @@ EOF
 
         -r)
           local rport=$2 lport=$3
-          [[ $lport && $rport ]] || { echo "Usage: susops add -r LOCAL_PORT REMOTE_PORT"; echo "Map a port from your localhost to a remote server"; return 1; }
+          [[ $rport && $lport ]] || {
+            echo "Usage: susops add -r LOCAL_PORT REMOTE_PORT"
+            echo "Map a port from your localhost to a remote server"
+            return 1
+          }
 
-          # 1) Exact rule must not already exist remotely
-          if grep -q "^${rport} ${lport}\$" "$remote_conf" 2>/dev/null; then
+          if ! validate_port_in_range "$rport"; then
+            echo "REMOTE_PORT must be a valid port in range 1 to 65535"
+            return 1
+          elif ! validate_port_in_range "$lport"; then
+            echo "LOCAL_PORT must be a valid port in range 1 to 65535"
+            return 1
+          elif check_exact_rule "$rport" "$lport" "$remote_conf"; then
             echo "Remote forward $ssh_host:${rport} → localhost:${lport} is already registered"
             return 1
-
-          # 2) REMOTE_PORT must not already be used
-          elif grep -q "^${rport} " "$remote_conf" 2>/dev/null; then
+          elif check_port_source "$rport" "$remote_conf"; then
             echo "Remote port ${rport} is already the source of a remote forward"
             return 1
-
-          # 3) REMOTE_PORT must not be targeted by any local forward  (loopback prevention)
-          elif grep -q "^[0-9]\+ ${rport}\$" "$local_conf" 2>/dev/null; then
+          elif check_port_target "$rport" "$local_conf"; then
             echo "Remote port ${rport} is already the target of a local forward"
             return 1
-
-          # 4) LOCAL_PORT must not be the source of a local forward (loopback prevention)
-          elif grep -q "^${lport} " "$local_conf" 2>/dev/null; then
+          elif check_port_source "$lport" "$local_conf"; then
             echo "Local port ${lport} is already the source of a local forward"
             return 1
-
+          elif check_port_in_use "$rport" "$ssh_host"; then
+            echo "Remote port $rport is already in use on $ssh_host"
+            return 1
           else
             echo "${rport} ${lport}" >> "$remote_conf"
             echo "Registered remote forward $ssh_host:${rport} → localhost:${lport}"
@@ -264,18 +304,25 @@ EOF
 
         *)
           local host=$1
-          [[ $host ]] || { echo "Usage: add [HOST] [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT] "; echo "Ports are mapped in schema FROM -> TO"; return 1; }
+          [[ $host ]] || {
+            echo "Usage: add [HOST] [-l REMOTE_PORT LOCAL_PORT] [-r LOCAL_PORT REMOTE_PORT]";
+            echo "Ports are mapped in schema FROM -> TO";
+            return 1;
+          }
+
           if grep -q "host === \"$host\"" "$pacfile"; then
             echo "$host is already in PAC file"
             return 1
-          else
-            awk -v h="$host" '/return "DIRECT"/ { print "  if (host === \""h"\" || dnsDomainIs(host, \"."h"\")) return \"SOCKS5 127.0.0.1:'$socks_port'\";" }1' \
-              "$pacfile" > "$workspace/tmp.pac" && mv "$workspace/tmp.pac" "$pacfile"
-            echo "Added $host to PAC file"
-            is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" && test_entry "$host"
-            return 0
           fi
-          ;;
+
+          host=$(echo "$host" | sed -E 's/^[^:]+:\/\///; s/\/.*//')
+
+          awk -v h="$host" '/return "DIRECT"/ { print "  if (host === \""h"\" || dnsDomainIs(host, \"."h"\")) return \"SOCKS5 127.0.0.1:'$socks_port'\";" }1' \
+            "$pacfile" > "$workspace/tmp.pac" && mv "$workspace/tmp.pac" "$pacfile"
+
+          echo "Added $host to PAC file"
+          is_running "$SUSOPS_SSH_PROCESS_NAME" "SOCKS5 proxy" && test_entry "$host"
+          return 0
       esac
       ;;
 
