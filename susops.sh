@@ -8,12 +8,8 @@ susops() {
   local -r workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
 
   # Define file paths for storing ports and config
-  local -r ssh_hostfile="$workspace/ssh_host"
-  local -r socks_portfile="$workspace/socks_port"
-  local -r pac_portfile="$workspace/pac_port"
   local -r pacfile="$workspace/susops.pac"
-  local -r remote_conf="$workspace/remote.conf"
-  local -r local_conf="$workspace/local.conf"
+  local -r cfgfile="$workspace/config.yaml"
 
   # Define process names for easier identification
   local -r SUSOPS_SSH_PROCESS_NAME="susops-ssh"
@@ -27,10 +23,11 @@ susops() {
   mkdir -p "$workspace"
 
   # Parse global flags
-  local args=()
+  local args=() connection_tag=""
   for arg in "$@"; do
     case "$arg" in
       -v|--verbose) verbose=true ;;
+      -c|--connection) connection_tag=$2; shift 2 ;;
       *) args+=("$arg") ;;
     esac
   done
@@ -40,11 +37,27 @@ susops() {
   [[ $1 ]] || { susops help; return 1; }
   local cmd=$1; shift
 
-  # Helper: load or generate a random ephemeral port and persist it
+  # Default to first connection if none specified
+  if [[ -z $conn_tag ]]; then
+    conn_tag=$(yq e '.connections[0].tag' "$cfgfile")
+  fi
+
+  # Helper: run yq in-place
+  update_cfg() {
+    yq e -i "$1" "$cfgfile";
+  }
+
+  # Load or generate a port: global pac_server_port or per-connection socks_proxy_port
   load_port() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-      cat "$file"
+    local key=$1 filter
+    if [[ $key == pac_server_port ]]; then
+      filter=".pac_server_port"
+    else
+      filter=".connections[] | select(.tag==\"$conn_tag\").$key"
+    fi
+    local cur=$(yq e "$filter" "$cfgfile")
+    if [[ $cur -gt 0 ]]; then
+      echo $cur
     else
       # zsh always returns the same $RANDOM value in subshells
       # see https://github.com/bminor/bash/blob/f3a35a2d601a55f337f8ca02a541f8c033682247/variables.c#L1371
@@ -52,167 +65,188 @@ susops() {
       local raw port
       raw=$(head -c2 /dev/random | od -An -tu2 | tr -d ' ')
       port=$(( raw % 16384 + 49152 ))
-      echo "$port" > "$file"
-      echo "$port"
+      if [[ $key == pac_server_port ]]; then
+        update_cfg ".pac_server_port = $port"
+      else
+        update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .${key} = $port)"
+      fi
+      echo $port
     fi
   }
 
-  # Load (or generate) SOCKS and PAC ports
-  local ssh_host=""
-  if [[ -f "$ssh_hostfile" ]]; then
-    ssh_host=$(<"$ssh_hostfile")
-  fi
-  local socks_port pac_port
-  socks_port=$(load_port "$socks_portfile")
-  pac_port=$(load_port "$pac_portfile")
-
-  # Create basic PAC file if missing
-  [[ -f "$pacfile" ]] || cat > "$pacfile" << 'EOF'
-function FindProxyForURL(url, host) {
-  return "DIRECT";
-}
+  # Bootstrap config if missing
+  if [[ ! -f "$cfgfile" ]]; then
+    cat >"$cfgfile" <<EOF
+pac_server_port: 0
+connections:
+  - tag: default
+    ssh_host: ""
+    socks_proxy_port: 0
+    forwards:
+      local: []
+      remote: []
+    pac_hosts: []
 EOF
+  fi
 
-  align_printf() {
-    local format=$1; shift
-    local args=("$@")
-    printf "%-13s $format\n" "${args[@]}"
-  }
+  # Fetch global and per-connection ports and host
+  pac_port=$(load_port pac_server_port)
+  socks_port=$(load_port socks_proxy_port)
+  ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
 
-  # Helper: check if a service is running based on PID file
-  is_running() {
-    local proc_name="$1"
-    local description="${2:-Service}"
-    local print_flag="$3"
-    local port="$4"
-    local additional="$5"
+  # (Re)generate unified PAC file with rules for all connections
+  {
+    echo 'function FindProxyForURL(url, host) {'
+    yq e ".connections[] as \$c | \$c.pac_hosts[] | \"  if (host == '\(.host)' || dnsDomainIs(host, '.\(.host)')) return 'SOCKS5 127.0.0.1:\($c.socks_proxy_port)';\"" "$cfgfile"
+    echo '  return "DIRECT";'
+    echo '}'
+  } > "$pacfile"
 
-    # find exact-match PIDs (newline-separated)
-    pids=$(pgrep -a -- "$proc_name" 2>/dev/null || :)
-
-    if [ -n "$pids" ]; then
-      pid_list=$(printf "%s" "$pids" | tr '\n' ' ' | sed 's/ $//')
-      count=$(wc -w <<< "$pid_list")
-      if [ "$count" -gt 1 ]; then
-        pid_string="PIDs $pid_list"
-      else
-        pid_string="PID $pid_list"
-      fi
-
-      # print if requested
-      if [ "$print_flag" = true ]; then
-        if [ -n "$additional" ]; then
-          align_printf "✅ running (%s, port %s, %s)" "$description:" "$pid_string" "$port" "$additional"
-        else
-          align_printf "✅ running (%s, port %s)" "$description:" "$pid_string" "$port"
-        fi
-      fi
-      return 0
-    fi
-
-    # not running
-    [ "$print_flag" = true ] && align_printf "⚠️ not running" "$description:"
-    return 1
-  }
+  # Build SSH args for this connection only
+  mapfile -t local_args < <(yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.local[] | \"-L \(.src):localhost:\(.dst)\"" "$cfgfile")
+  mapfile -t remote_args < <(yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[] | \"-R \(.src):localhost:\(.dst)\"" "$cfgfile")
 
 
-  test_entry() {
-    local target=$1
-    if [[ ! $target =~ ^[0-9]+$ ]]; then
-      if curl -s -k --max-time 5 --proxy socks5h://127.0.0.1:"$socks_port" "https://$target" >/dev/null 2>&1; then
-        printf "✅ %s via SOCKS\n" "$target"; return 0
-      else
-        printf "❌ %s via SOCKS\n" "$target"; return 1
-      fi
-    else
-      if [[ -f $local_conf ]] && grep -q "^$target " "$local_conf" 2>/dev/null; then
-        local rp=$(awk '$1==n{print $2}' n="$target" "$local_conf")
-        if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 0
-        else
-          printf "❌ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 1
-        fi
-      elif [[ -f $remote_conf ]] && grep -q "^$target " "$remote_conf" 2>/dev/null; then
-        local lp=$(awk '$1==n{print $2}' n="$target" "$remote_conf")
-        if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 0
-        else
-          printf "❌ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 1
-        fi
-      else
-        printf "❌ Port %s not found in local or remote config\n" "$target"; return 1
-      fi
-    fi
-  }
+#  align_printf() {
+#    local format=$1; shift
+#    local args=("$@")
+#    printf "%-13s $format\n" "${args[@]}"
+#  }
 
-  stop_by_name() {
-    local proc_name="$1"
-    local label="$2"
-    local keep_ports="${3:-false}"
-    local pids
-
-    # find every exact-match PID
-    pids=$(pgrep -a -- "$proc_name")
-
-    if [ -n "$pids" ]; then
-      # kill any that are still alive
-      for pid in $pids; do
-        if kill -0 "$pid" 2>/dev/null; then
-          kill "$pid" 2>/dev/null
-        fi
-      done
-
-      # clean up port file unless keep_ports is true
-      ! $keep_ports && rm -f "$socks_portfile"
-
-      align_printf "🛑 stopped" "$label"
-    else
-      ! $keep_ports && align_printf "⚠️ not running" "$label"
-    fi
-  }
-
-  validate_port_in_range() {
-    # $1: port
-    [[ $1 =~ ^[0-9]+$ && $1 -ge 1 && $1 -le 65535 ]]
-  }
-
-  # Generic checks against a config file
-  check_exact_rule() {
-    # $1: src port, $2: dst port, $3: config file
-    grep -q "^${1} ${2}$" "$3" 2>/dev/null
-  }
-
-  check_port_source() {
-    # $1: port, $2: config file
-    grep -q "^${1} " "$2" 2>/dev/null
-  }
-
-  check_port_target() {
-    # $1: port, $2: config file
-    grep -q "^[0-9]\+ ${1}$" "$2" 2>/dev/null
-  }
-
-  # Check if a port is in use on localhost or remote host
-  check_port_in_use() {
-    # $1: port, $2 (optional): host (defaults to localhost)
-    local port=$1 host=${2:-localhost}
-    if [[ "$host" == localhost ]]; then
-      lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
-    else
-      ssh "$host" lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
-    fi
-  }
+#  # Helper: check if a service is running based on PID file
+#  is_running() {
+#    local proc_name="$1"
+#    local description="${2:-Service}"
+#    local print_flag="$3"
+#    local port="$4"
+#    local additional="$5"
+#
+#    # find exact-match PIDs (newline-separated)
+#    pids=$(pgrep -a -- "$proc_name" 2>/dev/null || :)
+#
+#    if [ -n "$pids" ]; then
+#      pid_list=$(printf "%s" "$pids" | tr '\n' ' ' | sed 's/ $//')
+#      count=$(wc -w <<< "$pid_list")
+#      if [ "$count" -gt 1 ]; then
+#        pid_string="PIDs $pid_list"
+#      else
+#        pid_string="PID $pid_list"
+#      fi
+#
+#      # print if requested
+#      if [ "$print_flag" = true ]; then
+#        if [ -n "$additional" ]; then
+#          align_printf "✅ running (%s, port %s, %s)" "$description:" "$pid_string" "$port" "$additional"
+#        else
+#          align_printf "✅ running (%s, port %s)" "$description:" "$pid_string" "$port"
+#        fi
+#      fi
+#      return 0
+#    fi
+#
+#    # not running
+#    [ "$print_flag" = true ] && align_printf "⚠️ not running" "$description:"
+#    return 1
+#  }
+#
+#
+#  test_entry() {
+#    local target=$1
+#    if [[ ! $target =~ ^[0-9]+$ ]]; then
+#      if curl -s -k --max-time 5 --proxy socks5h://127.0.0.1:"$socks_port" "https://$target" >/dev/null 2>&1; then
+#        printf "✅ %s via SOCKS\n" "$target"; return 0
+#      else
+#        printf "❌ %s via SOCKS\n" "$target"; return 1
+#      fi
+#    else
+#      if [[ -f $local_conf ]] && grep -q "^$target " "$local_conf" 2>/dev/null; then
+#        local rp=$(awk '$1==n{print $2}' n="$target" "$local_conf")
+#        if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
+#          printf "✅ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 0
+#        else
+#          printf "❌ local:%s -> $ssh_host:%s\n" "$target" "$rp"; return 1
+#        fi
+#      elif [[ -f $remote_conf ]] && grep -q "^$target " "$remote_conf" 2>/dev/null; then
+#        local lp=$(awk '$1==n{print $2}' n="$target" "$remote_conf")
+#        if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
+#          printf "✅ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 0
+#        else
+#          printf "❌ $ssh_host:%s -> localhost:%s\n" "$target" "$lp"; return 1
+#        fi
+#      else
+#        printf "❌ Port %s not found in local or remote config\n" "$target"; return 1
+#      fi
+#    fi
+#  }
+#
+#  stop_by_name() {
+#    local proc_name="$1"
+#    local label="$2"
+#    local keep_ports="${3:-false}"
+#    local pids
+#
+#    # find every exact-match PID
+#    pids=$(pgrep -a -- "$proc_name")
+#
+#    if [ -n "$pids" ]; then
+#      # kill any that are still alive
+#      for pid in $pids; do
+#        if kill -0 "$pid" 2>/dev/null; then
+#          kill "$pid" 2>/dev/null
+#        fi
+#      done
+#
+#      # clean up port file unless keep_ports is true
+#      ! $keep_ports && rm -f "$socks_portfile"
+#
+#      align_printf "🛑 stopped" "$label"
+#    else
+#      ! $keep_ports && align_printf "⚠️ not running" "$label"
+#    fi
+#  }
+#
+#  validate_port_in_range() {
+#    # $1: port
+#    [[ $1 =~ ^[0-9]+$ && $1 -ge 1 && $1 -le 65535 ]]
+#  }
+#
+#  # Generic checks against a config file
+#  check_exact_rule() {
+#    # $1: src port, $2: dst port, $3: config file
+#    grep -q "^${1} ${2}$" "$3" 2>/dev/null
+#  }
+#
+#  check_port_source() {
+#    # $1: port, $2: config file
+#    grep -q "^${1} " "$2" 2>/dev/null
+#  }
+#
+#  check_port_target() {
+#    # $1: port, $2: config file
+#    grep -q "^[0-9]\+ ${1}$" "$2" 2>/dev/null
+#  }
+#
+#  # Check if a port is in use on localhost or remote host
+#  check_port_in_use() {
+#    # $1: port, $2 (optional): host (defaults to localhost)
+#    local port=$1 host=${2:-localhost}
+#    if [[ "$host" == localhost ]]; then
+#      lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+#    else
+#      ssh "$host" lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+#    fi
+#  }
 
   case $cmd in
     help|--help|-h)
       cat << EOF
-Usage: susops [-v|--verbose] COMMAND [ARGS]
+Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands: .
   add [-l LOCAL_PORT REMOTE_PORT] [-r REMOTE_PORT LOCAL_PORT] [HOST]  add hostname or port forward, schema source → target
   rm  [-l LOCAL_PORT]             [-r REMOTE_PORT]            [HOST]  remove hostname or port forward
-  start [ssh_host] [socks_port] [pac_port]                            start proxy and PAC server
-  stop  [--keep-ports]                                                stop proxy and server
-  restart                                                             stop and start (preserves ports)
+  start   [SSH_HOST]                                                  start proxy and PAC server
+  stop    [SSH_HOST] [--keep-ports]                                   stop proxy and server
+  restart [SSH_HOST]                                                  stop and start (preserves ports)
   ls                                                                  list PAC hosts and remote forwards
   ps                                                                  show status, ports, and remote forwards
   reset [--force]                                                     remove all files and configs
@@ -220,7 +254,7 @@ Commands: .
   chrome                                                              launch Chrome with proxy
   chrome-proxy-settings                                               open Chrome proxy settings
   firefox                                                             launch Firefox with proxy
-  help|--help|-h                                                      show this help message
+  help, --help, -h                                                    show this help message
 Options:
   -v, --verbose                                                       enable verbose output
 EOF
@@ -498,6 +532,7 @@ EOF
         printf "Are you sure? [y/N] "
         read -r user_decision
         if [[ ! $user_decision =~ ^[Yy]$ ]]; then
+          echo "Aborted."
           return 1
         fi
       fi
