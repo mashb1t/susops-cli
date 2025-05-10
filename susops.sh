@@ -5,21 +5,21 @@ susops() {
   set +m
 
   # Defaults
-  readonly workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
+  local -r workspace="${SUSOPS_WORKSPACE:-$HOME/.susops}"
 
   # Define file paths for storing ports and config
-  readonly ssh_hostfile="$workspace/ssh_host"
-  readonly socks_portfile="$workspace/socks_port"
-  readonly pac_portfile="$workspace/pac_port"
-  readonly pacfile="$workspace/susops.pac"
-  readonly remote_conf="$workspace/remote.conf"
-  readonly local_conf="$workspace/local.conf"
+  local -r ssh_hostfile="$workspace/ssh_host"
+  local -r socks_portfile="$workspace/socks_port"
+  local -r pac_portfile="$workspace/pac_port"
+  local -r pacfile="$workspace/susops.pac"
+  local -r remote_conf="$workspace/remote.conf"
+  local -r local_conf="$workspace/local.conf"
 
   # Define process names for easier identification
-  readonly SUSOPS_SSH_PROCESS_NAME="susops-ssh"
-  readonly SUSOPS_PAC_LOOP_PROCESS_NAME="susops-pac-loop"
-  readonly SUSOPS_PAC_NC_PROCESS_NAME="susops-pac-nc"
-  readonly SUSOPS_PAC_UNIFIED_PROCESS_NAME="susops-pac"
+  local -r SUSOPS_SSH_PROCESS_NAME="susops-ssh"
+  local -r SUSOPS_PAC_LOOP_PROCESS_NAME="susops-pac-loop"
+  local -r SUSOPS_PAC_NC_PROCESS_NAME="susops-pac-nc"
+  local -r SUSOPS_PAC_UNIFIED_PROCESS_NAME="susops-pac"
 
   # Verbosity toggle for debugging
   local verbose=false
