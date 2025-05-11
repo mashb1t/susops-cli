@@ -108,8 +108,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   # Fetch global and per-connection ports and host
-  pac_port=$(load_port pac_server_port)
-  socks_port=$(load_port socks_proxy_port)
+  pac_port=$(yq e '.pac_server_port' "$cfgfile")
   ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
 
   # (Re)generate unified PAC file with rules for all connections
@@ -262,6 +261,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   test_entry() {
     local target=$1
     local conn_tag=${2:-$conn_tag}
+
+    local ssh_host socks_port
+    ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
+    socks_port=$(yq e ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port" "$cfgfile")
+
     if [[ $target =~ ^[0-9]+$ ]]; then
       # Target looks like a port → could be local or remote
       if yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.local[]?
@@ -635,6 +639,8 @@ EOF
       write_pac_file
 
       # Only start PAC server if not already running
+      local pac_port
+      pac_port=$(load_port pac_server_port)
       if is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false >/dev/null; then
         is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
       else
@@ -722,8 +728,6 @@ EOF
       ##################################################################
       # 2. PAC server status (single global instance)
       ##################################################################
-      local pac_port
-      pac_port=$(yq e '.pac_server_port' "$cfgfile")
       overall_count=$((overall_count+1))
       is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" \
                  "URL: http://localhost:${pac_port}/susops.pac" || stopped_count=$((stopped_count+1))
