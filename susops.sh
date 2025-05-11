@@ -33,8 +33,8 @@ EOF
   local args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -v|--verbose) verbose=true; shift ;;
-      -c|--connection) conn_tag=$2; conn_specified=true; shift 2 ;;
+      -v|--v|--verbose) verbose=true; shift ;;
+      -c|--c|--connection) conn_tag=$2; conn_specified=true; shift 2 ;;
       *) args+=("$1"); shift ;;
     esac
   done
