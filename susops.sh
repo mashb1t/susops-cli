@@ -770,7 +770,8 @@ EOF
         fi
       fi
 
-      run_susops stop --keep-ports --all
+      # ensure all susops processes are stopped
+      pkill -f "susops"
 
       rm -rf "$workspace"
       echo "Removed workspace '$workspace' and all susops configuration."
