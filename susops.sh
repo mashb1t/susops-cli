@@ -52,7 +52,7 @@ EOF
       echo "Please add a connection using:
 susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       "
-      cmd="help"
+      cmd="invalid-command" # shows help and returns 1
     fi
   fi
   $verbose && echo "Connection tag: $conn_tag"
@@ -730,12 +730,12 @@ EOF
 
       if [[ $stopped_count -eq 0 ]]; then
         return 0
-      elif [[ $stopped_count -le $overall_count ]]; then
-        return 1
-      elif [[ $stopped_count -eq $overall_count ]]; then
+      elif [[ $stopped_count -lt $overall_count ]]; then
         return 2
-      else
+      elif [[ $stopped_count -eq $overall_count ]]; then
         return 3
+      else
+        return 1
       fi
       ;;
 
