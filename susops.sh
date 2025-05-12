@@ -374,7 +374,7 @@ EOF
       ;;
 
     ##############################################################################
-    # add_connection <tag> [ssh_host] [socks_proxy_port]
+    # add_connection tag ssh_host [socks_proxy_port]
     # - Creates a new empty connection block.
     # - Fails if the tag already exists or is empty/contains spaces.
     ##############################################################################
@@ -589,11 +589,11 @@ EOF
           if yq e ".connections[].pac_hosts[] | select(.==\"$host\")" "$cfgfile" | grep -q .; then
             update_cfg "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
             write_pac_file
-            echo "Removed $host from all connections"
+            echo "Removed $host"
             is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Please reload your browser proxy settings."
             return 0
           else
-            echo "$host not found in any connection"
+            echo "$host not found"
             if [[ $host =~ ^[0-9]+$ ]]; then echo "Use \"susops -l LOCAL_PORT\" OR \"susops -r REMOTE_PORT\" to remove a forwarded port"; fi
             return 1
           fi
@@ -619,7 +619,7 @@ EOF
 
         # Start SOCKS proxy for chosen connection
         if is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" >/dev/null; then
-          is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" true true "SOCKS5 [$tag]" "$socks_port" "SSH host: $ssh_host"
+          is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
         else
           local_args=$(build_args "local" "-L" "$tag")
           remote_args=$(build_args "remote" "-R" "$tag")
@@ -631,7 +631,7 @@ EOF
 
           $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $SUSOPS_SSH_PROCESS_NAME ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
           nohup bash -c "exec -a $SUSOPS_SSH_PROCESS_NAME-$tag ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
-          align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 [$tag]:" "$!" "$socks_port" "$ssh_host"
+          align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 proxy [$tag]:" "$!" "$socks_port" "$ssh_host"
         fi
       done
 
