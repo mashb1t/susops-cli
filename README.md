@@ -76,6 +76,13 @@ so --help
 > [!TIP]
 > You can configure the ssh host using the ssh config file (usually `~/.ssh/config`) to also set up proxy jumps and multi-hop SSH connections.
 
+### 2. Configure Connection
+
+```bash
+so add-connection <tag> <ssh_host> <socks_proxy_port>
+so start
+```
+
 ## Explanation
 
 `so` can be used to create a **SOCKS5 proxy** and **remote port forwarder** over SSH.
@@ -84,6 +91,8 @@ It’s designed to be simple and effective for developers needing to tunnel traf
 1. **Dynamic SOCKS5 forwarding** (`ssh -N -D <socks_port>`)
 2. **remote port forwarding** (`-R <remote_port>:localhost:<local_port>`)
 3. **PAC file** and built-in HTTP server for serving browser proxy settings to Chrome/Firefox.
+
+Susops supports multiple simultaneous connections to different hosts, and you can add/remove port forwards and hosts at any time.
 
 ## SOCKS5 Proxy
 ### What it does
@@ -96,7 +105,7 @@ It’s designed to be simple and effective for developers needing to tunnel traf
 
 Configure and start the proxy:
 ```bash
-so start <ssh_host>
+so start
 so add <domain>
 so restart
 ```
@@ -189,13 +198,7 @@ Only matching (sub)domains go through the SOCKS proxy; others use direct connect
 
 See https://www.ssh.com/academy/ssh/tunneling-example#local-forwarding
 
-1. **Configuration**  
-   Entries are stored in `~/.susops/forward.conf` as lines:
-
-   ```text
-   <local_port> <remote_host>
-    ```
-2. **During `so start`**
+1. **During `so start`**
    - Reads each line, builds `ssh` args:
 
      ```text
@@ -203,7 +206,7 @@ See https://www.ssh.com/academy/ssh/tunneling-example#local-forwarding
      -L 5000:localhost:8001
      ```
 
-3. Passes them to `ssh -N -D <socks_port> …` which establishes the local port forwards on your machine.
+2. Passes them to `ssh -N -D <socks_port> …` which establishes the local port forwards on your machine.
 
 </details>
 
@@ -212,13 +215,7 @@ See https://www.ssh.com/academy/ssh/tunneling-example#local-forwarding
 
 See https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
-1. **Configuration**
-   Entries are stored in `~/.susops/reverse.conf` as lines:
-   ```text
-   <remote_port> <local_port>
-   ```
-
-2. **During `so start`**
+1. **During `so start`**
     - Reads each line, builds `ssh` args:
 
       ```text
