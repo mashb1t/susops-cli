@@ -183,20 +183,21 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
 
     if [[ -n $pids ]]; then
-      # Build “PID 123 456” or “PIDs 123 456”
-      local list
-      list=$(printf '%s\n' "$pids" | awk '{print $1}' | xargs)
-      local how_many
-      how_many=$(wc -w <<< "$list")
-      local label="PID"
-      [[ $how_many -gt 1 ]] && label="PIDs"
-      [[ $do_print == true ]] && {
+      if [[ $do_print == true ]]; then
+        # Build “PID 123 456” or “PIDs 123 456”
+        local list
+        list=$(printf '%s\n' "$pids" | awk '{print $1}' | xargs)
+        local how_many
+        how_many=$(wc -w <<< "$list")
+        local label="PID"
+        [[ $how_many -gt 1 ]] && label="PIDs"
+
         if [[ -n $extra ]]; then
           align_printf "✅ running (%s %s%s%s)" "$desc:" "$label" "$list" "${port:+, port $port}" ", $extra"
         else
           align_printf "✅ running (%s %s%s)" "$desc:" "$label" "$list" "${port:+, port $port}"
         fi
-      }
+      fi
       return 0
     fi
 
@@ -383,7 +384,8 @@ EOF
       local ssh_host=${2:-""}
       local socks_proxy_port=$3
 
-      [[ -z $tag || $tag =~ [[:space:]] ]] && { echo "Usage: susops add-connection TAG"; echo "TAG must not contain a whitespace"; return 1; }
+      [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && { echo "Usage: susops add-connection TAG"; echo "TAG must not contain a whitespace"; return 1; }
+      tag=$(echo "$tag" | xargs)
 
       # Abort if tag already present
       if yq e ".connections[] | select(.tag == \"$tag\")" "$cfgfile" | grep -q . >/dev/null; then
@@ -418,6 +420,8 @@ EOF
         "$cfgfile"
 
       align_printf "✅ tested & added" "Connection [$tag]:"
+      is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
+      echo "Restart proxy to apply"
       ;;
 
     ##############################################################################
@@ -617,7 +621,7 @@ EOF
 
       [[ -n $3 ]] && pac_port=$3 && update_cfg   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
 
-      for tag in $(get_connection_tags); do
+      echo "$(get_connection_tags)" | while IFS= read -r tag; do
         ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
         socks_port=$(load_port socks_proxy_port "$tag")
 
@@ -691,7 +695,7 @@ EOF
       local keep_ports=false
       [[ $1 == '--keep-ports' ]] && keep_ports=true && shift
 
-      for tag in $(get_connection_tags); do
+      echo "$(get_connection_tags)" | while IFS= read -r tag; do
         stop_by_name "$SUSOPS_SSH_PROCESS_NAME-$tag" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
       done
 
@@ -718,7 +722,7 @@ EOF
       ##################################################################
       # 1. Iterate over connections
       ##################################################################
-      for tag in $(get_connection_tags); do
+      echo "$(get_connection_tags)" | while IFS= read -r tag; do
         local socks_port ssh_host
         socks_port=$(yq e ".connections[] | select(.tag==\"$tag\").socks_proxy_port" "$cfgfile")
         ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
@@ -801,7 +805,7 @@ EOF
       local failures=0
       local stopped=0
 
-      for tag in $(get_connection_tags); do
+      echo "$(get_connection_tags)" | while IFS= read -r tag; do
         echo "----------------------------------------"
         echo "Testing connection '$tag'"
         # Pull runtime values for this connection
