@@ -558,7 +558,7 @@ EOF
           local lport=$2
           [[ $lport ]] || { echo "Usage: susops rm -l LOCAL_PORT"; return 1; }
           if check_port_source "$lport" "local"; then
-            update_cfg "del(.connections[].forwards.local[] | select(.tag==$lport or .src==$lport))"
+            update_cfg "del(.connections[].forwards.local[] | select(.src==$lport))"
             echo "Removed local forward localhost:$lport"
             is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
             return 0
@@ -572,7 +572,7 @@ EOF
           local rport=$2
           [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
           if check_port_source "$rport" "remote"; then
-            update_cfg "del(.connections[].forwards.remote[] | select(.tag==$rport or .src==$rport))"
+            update_cfg "del(.connections[].forwards.remote[] | select(.src==$rport))"
             echo "Removed remote forward $ssh_host:$rport"
             is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
             return 0
