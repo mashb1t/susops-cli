@@ -540,12 +540,12 @@ EOF
             return 1;
           }
 
+          host=$(echo "$host" | sed -E 's/^[^:]+:\/\///; s/\/.*//')
+
           if yq e ".connections[].pac_hosts[] | select(.==\"$host\")" "$cfgfile" | grep -q .; then
             echo "Error: PAC host '$host' already exists in a connection"
             return 1
           fi
-
-          host=$(echo "$host" | sed -E 's/^[^:]+:\/\///; s/\/.*//')
 
           update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .pac_hosts += [\"$host\"])"
           write_pac_file
