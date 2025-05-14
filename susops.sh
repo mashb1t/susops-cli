@@ -461,7 +461,8 @@ EOF
             return 1
           }
 
-          [[ -z $tag || $tag =~ [[:space:]] ]] && tag="$lport"
+          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
+          tag=$(echo "$tag" | xargs)
 
           if ! validate_port_in_range "$lport"; then
             echo "LOCAL_PORT must be a valid port in range 1 to 65535"
@@ -493,12 +494,15 @@ EOF
           ;;
 
         -r)
-          local rport=$2 lport=$3
+          local rport=$2 lport=$3 tag=${4:-""}
           [[ $rport && $lport ]] || {
             echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT [TAG]"
             echo "Map a port from your localhost to a remote server"
             return 1
           }
+
+          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
+          tag=$(echo "$tag" | xargs)
 
           if ! validate_port_in_range "$rport"; then
             echo "REMOTE_PORT must be a valid port in range 1 to 65535"
