@@ -15,13 +15,14 @@ susops() {
   # Define process names for easier identification
   local -r SUSOPS_PROCESS_NAME_BASE="susops"
   local -r SUSOPS_SSH_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-ssh"
-  local -r SUSOPS_PAC_LOOP_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac-loop"
-  local -r SUSOPS_PAC_NC_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac-nc"
+
   local -r SUSOPS_PAC_UNIFIED_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac"
+  local -r SUSOPS_PAC_LOOP_PROCESS_NAME="$SUSOPS_PAC_UNIFIED_PROCESS_NAME-loop"
+  local -r SUSOPS_PAC_NC_PROCESS_NAME="$SUSOPS_PAC_UNIFIED_PROCESS_NAME-nc"
 
   mkdir -p "$workspace"
 
-    # Bootstrap config if missing
+  # Bootstrap config if missing
   if [[ ! -f "$cfgfile" ]]; then
     cat >"$cfgfile" <<EOF
 pac_server_port: 0
@@ -56,9 +57,12 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       cmd="invalid-command" # shows help and returns 1
     fi
   fi
-  $verbose && echo "Connection tag: $conn_tag"
 
-  # Helper: run susops.sh with consistent arguments (connection and verbose tags)
+  # Initialize ports
+  pac_port=$(yq e ".pac_server_port" "$cfgfile")
+  ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
+
+  # Run susops.sh with consistent arguments (connection and verbose tags)
   run_susops() {
     local args=("$@")
     if [[ $verbose == true ]]; then
@@ -68,6 +72,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 #    ./susops.sh -c "$conn_tag" "${args[@]}"
   }
 
+  # Get connection tags from the config file
+  # If a specific connection is specified, return only that tag
   get_connection_tags() {
     if $conn_specified; then
       # If a specific connection is specified, return only that tag
@@ -78,16 +84,31 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
-  # Helper: run yq in-place
+
+
+  # Run yq in-place
+  read_cfg() {
+    yq e "$1" "$cfgfile"
+  }
+
   update_cfg() {
     yq e -i "$1" "$cfgfile";
   }
 
-  # Load or generate a port: global pac_server_port or per-connection socks_proxy_port
+  ###############################################################################
+  # load_port  <key> [conn_tag]
+  #
+  # • key        – Key to read from the config file (e.g. "socks_proxy_port")
+  # • conn_tag   – Connection tag (optional, defaults to the current connection)
+  #
+  # Returns     – Port number (or generates a random one if not set)
+  #
+  # Generates a random port number if the key is not already set in the config file.
+  ##############################################################################
   load_port() {
     local key=$1 filter
     local conn_tag=${2:-$conn_tag}
-    if [[ $key == pac_server_port ]]; then
+    if [[ $key == "pac_server_port" ]]; then
       filter=".pac_server_port"
     else
       filter=".connections[] | select(.tag==\"$conn_tag\").$key"
@@ -108,10 +129,6 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
-  # Fetch global and per-connection ports and host
-  pac_port=$(yq e '.pac_server_port' "$cfgfile")
-  ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
-
   # (Re)generate unified PAC file with rules for all connections
   write_pac_file() {
     {
@@ -128,7 +145,15 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     } > "$pacfile"
   }
 
-  # Helper to build port-forward args for both local and remote
+  ##############################################################################
+  # build_args  <key> <flag> [conn_tag]
+  #
+  # • key        – Key to read from the config file (e.g. "local" or "remote")
+  # • flag       – Flag to pass to ssh (e.g. "-L" or "-R")
+  # • conn_tag   – Connection tag (optional, defaults to the current connection)
+  #
+  # Returns     – Arguments for ssh command
+  ##############################################################################
   build_args() {
     local key=$1 flag=$2 conn_tag=${3:-$conn_tag}
     args=()
@@ -136,7 +161,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       [[ -z $src || -z $dst ]] && continue
       args+=("$flag" "${src}:localhost:${dst}")
     done < <(
-      yq eval "
+      yq e "
         .connections[]
         | select(.tag == \"$conn_tag\")
         | (.forwards.$key // [])[]
@@ -154,8 +179,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   ##############################################################################
-  # is_running  <proc-pattern>  [description] [print?] [port] [extra] [exact?]
-  # ----------------------------------------------------------------------------
+  # is_running  <proc-pattern> [description] [print?] [port] [extra] [exact?]
+  #
   # • proc-pattern  – String passed to pgrep -f.
   #                  If exact? is “true” (6th arg) we anchor it with ^…$ so
   #                             only a *full-command* match is returned.
@@ -208,14 +233,15 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   ##############################################################################
-  # stop_by_name  <proc-pattern>  [label] [exact?]
-  # ----------------------------------------------------------------------------
-  # • proc-pattern – String passed to pgrep -f
-  #                  If exact? (3rd arg) is “true”, anchors with ^…$ so only an
-  #                  exact full-command match returns (same convention as
-  #                  is_running).
-  # • label        – Human-readable label, e.g. "SOCKS5 proxy"  (optional)
-  # • exact?       – "true" | "false" (default false)
+  # stop_by_name  <proc-pattern> <label> [keep_ports] [tag] [exact?]
+  #
+  # • proc-pattern – Pattern for pgrep to match processes.
+  # • label        – Human-readable label (optional).
+  # • keep_ports   – If "true", do not reset socks_proxy_port (default: false).
+  # • tag          – Connection tag for port reset (optional).
+  # • exact?       – "true" for exact match, "false" for pattern match (default: false).
+  #
+  # Kills all matching PIDs (SIGTERM), prints status, and resets port unless keep_ports is true.
   #
   # Behaviour
   #   – Finds every matching PID, kills them (SIGTERM).
@@ -247,7 +273,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
       # zero out the socks_proxy_port unless user asked to keep
       if [[ $keep_ports == false && -n "$tag" ]]; then
-        yq e -i "(.connections[] | select(.tag==\"$tag\")).socks_proxy_port = 0" "$cfgfile"
+        update_cfg "(.connections[] | select(.tag==\"$tag\")).socks_proxy_port = 0"
       fi
 
       align_printf "🛑 stopped" "${label:-Service}:"
@@ -258,8 +284,16 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     return 1
   }
 
-  # Helper: single host/port test
-  ############################################################
+  ############################################################################
+  # test_entry  <target> [conn_tag]
+  #
+  # • target     – Host or port to test (e.g. localhost:8080 or example.com)
+  # • conn_tag   – Connection tag (optional, defaults to the current connection)
+  #
+  # Test connectivity to a target through the SOCKS proxy.
+  # If the target is a port, it will be tested as a local or remote forward.
+  # If the target is a hostname, it will be tested through the SOCKS proxy.
+  ############################################################################
   test_entry() {
     local target=$1
     local conn_tag=${2:-$conn_tag}
@@ -287,7 +321,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       elif yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[]?
                  | select(.src == $target)" "$cfgfile" | grep -q . >/dev/null; then
         # Remote forward exists: test via ssh on remote side
-        $verbose && echo "Testing remote forward $target on $ssh_host"
+        $verbose && echo "Testing remote forward $target on $ssh_host:$target"
         if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
           printf "✅ remote:%s (%s:%s → localhost:%s)\n" \
                  "$target" "$ssh_host" "$target" \
@@ -314,23 +348,27 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
+  # Validate if a port is in the range 1-65535
   validate_port_in_range() {
     # $1: port
     [[ $1 =~ ^[0-9]+$ && $1 -ge 1 && $1 -le 65535 ]]
   }
 
+  # Check if exact local/remote forward rule exists
   check_exact_rule() {
     # $1: src, $2: dst, $3: type (local|remote)
     yq e ".connections[].forwards.$3[] | select(.src==\"$1\" and .dst==\"$2\")" "$cfgfile" | grep -q . && return 0
     return 1
   }
 
+  # Check if a src port is configured for given type
   check_port_source() {
     # $1: port, $2: type (local|remote)
     yq e ".connections[].forwards.$2[] | select(.src==\"$1\")" "$cfgfile" | grep -q . && return 0
     return 1
   }
 
+  # Check if a dst port is configured for given type
   check_port_target() {
     # $1: port, $2: type (local|remote)
     yq e ".connections[].forwards.$2[] | select(.dst==\"$1\")" "$cfgfile" | grep -q . && return 0
@@ -348,20 +386,26 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
-  sanitize_process_name() {
+  # Replace spaces with hyphens, remove leading/trailing whitespace
+  normalize_process_name() {
     # $1: process name
     echo "$1" | xargs | tr ' ' '-'
   }
 
   case $cmd in
     help|--help|-h)
+      # Usage: susops help
+      #
+      # Show help message with usage instructions and available commands.
+      # This is the default command if no other command is specified.
+
       cat << EOF
 Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands:
   add-connection TAG SSH_HOST [SOCKS_PORT]                                        add a new connection
   rm-connection  TAG                                                              remove a connection
-  add [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]] [HOST]  add hostname or port forward, schema source → target
-  rm  [-l LOCAL_PORT|TAG]               [-r REMOTE_PORT|TAG]              [HOST]  remove hostname or port forward
+  add [HOST] [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]]  add hostname or port forward, schema source → target
+  rm  [HOST] [-l LOCAL_PORT]                   [-r REMOTE_PORT]                   remove hostname or port forward
   start   [SSH_HOST] [SOCKS_PORT] [PAC_PORT]                                      start proxy and PAC server
   stop    [--keep-ports] [--force]                                                stop proxy and server (if no other proxies are running)
   restart                                                                         stop and start (preserves ports)
@@ -380,17 +424,19 @@ Options:
 EOF
       ;;
 
-    ##############################################################################
-    # add_connection tag ssh_host [socks_proxy_port]
-    # - Creates a new empty connection block.
-    # - Fails if the tag already exists or is empty/contains spaces.
-    ##############################################################################
+
     add-connection)
+      # Usage: susops add-connection TAG SSH_HOST [SOCKS_PORT]
+      #
+      # • TAG         – Connection tag (must not contain whitespace)
+      # • SSH_HOST    – SSH host to connect to
+      # • SOCKS_PORT  – Port for the SOCKS proxy (default: ephemeral port)
+
       local tag=$1
       local ssh_host=${2:-""}
       local socks_proxy_port=$3
 
-      [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && { echo "Usage: susops add-connection TAG"; echo "TAG must not contain a whitespace"; return 1; }
+      [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && { echo "Usage: susops add-connection TAG SSH_HOST [SOCKS_PORT]"; echo "TAG must not contain a whitespace"; return 1; }
       tag=$(echo "$tag" | xargs)
 
       # Abort if tag already present
@@ -402,7 +448,7 @@ EOF
       [[ -z $ssh_host ]] && { echo "Error: SSH host is required"; return 1; }
 
       if [[ -z $socks_proxy_port ]]; then
-        socks_proxy_port=$(load_port socks_proxy_port "$tag")
+        socks_proxy_port=$(load_port "socks_proxy_port" "$tag")
       elif ! validate_port_in_range "$socks_proxy_port"; then
         echo "Error: socks_proxy_port must be a valid port in range 1 to 65535"
         return 1
@@ -417,24 +463,28 @@ EOF
         return 1
       fi
 
-      # Append new entry
-      yq e -i \
-        ".connections += [{\"tag\": \"$tag\", \"ssh_host\": \"$ssh_host\", \
-                           \"socks_proxy_port\": $socks_proxy_port, \
-                           \"forwards\": {\"local\": [], \"remote\": []}, \
-                           \"pac_hosts\": []}]" \
-        "$cfgfile"
+      # Add connection to config file
+      update_cfg ".connections += [{
+        \"tag\": \"$tag\",
+        \"ssh_host\": \"$ssh_host\",
+        \"socks_proxy_port\": $socks_proxy_port,
+        \"forwards\": {\"local\": [], \"remote\": []},
+        \"pac_hosts\": []
+      }]"
 
       align_printf "✅ tested & added" "Connection [$tag]:"
       is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
       echo "Restart proxy to apply"
       ;;
 
-    ##############################################################################
-    # remove_connection <tag>
-    # - Stops the connection if running, then deletes its YAML block.
-    ##############################################################################
     rm-connection)
+      # Usage: susops rm-connection TAG
+      #
+      # • TAG – Connection tag to remove
+      #
+      # Remove a connection from the config file and stop the SOCKS proxy if running.
+      # If the connection has hosts, the PAC file will be updated.
+
       local tag=$1
       [[ -z $tag ]] && { echo "Usage: susops rm-connection TAG"; return 1; }
 
@@ -443,16 +493,16 @@ EOF
         return 1
       fi
 
-       # Stop tunnel if still running
+      # Stop tunnel if still running
       local process_name
-      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
       stop_by_name "$process_name" "SOCKS5 proxy [$tag]" false "$tag" >/dev/null
 
       # check if connection has hosts
       local has_hosts
       has_hosts=$(yq e ".connections[] | select(.tag == \"$tag\") | .pac_hosts" "$cfgfile" | grep -q . >/dev/null)
       # delete connection
-      yq e -i "del(.connections[] | select(.tag == \"$tag\"))" "$cfgfile"
+      update_cfg "del(.connections[] | select(.tag == \"$tag\"))"
 
       local hint=""
       if [[ $has_hosts ]]; then
@@ -464,8 +514,14 @@ EOF
       ;;
 
     add)
+      # Usage: susops add [HOST] [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]]
+      #
+      # • HOST                            – Hostname to add to config and PAC file
+      # • -l LOCAL_PORT REMOTE_PORT [TAG] – Add a local forward
+      # • -r REMOTE_PORT LOCAL_PORT [TAG] – Add a remote forward
+
       local process_name
-      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
 
       case "$1" in
         -l)
@@ -572,8 +628,15 @@ EOF
       ;;
 
     rm)
+      # Usage:
+      #   susops rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]
+      #
+      # • HOST        – Hostname to remove from config and PAC file
+      # • LOCAL_PORT  – Port to remove from local forward
+      # • REMOTE_PORT – Port to remove from remote forward
+      #
       local process_name
-      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
       case "$1" in
         -l)
           local lport=$2
@@ -623,24 +686,33 @@ EOF
       ;;
 
     restart)
-      run_susops stop --keep-ports
+      # Usage: susops restart
+      #
+      # Restart the SOCKS proxy and PAC server without changing the ports.
+      run_susops stop --keep-ports --force
       run_susops start
       ;;
 
     start)
+      # Usage: start [SSH_HOST] [SOCKS_PORT] [PAC_PORT]
+      #
+      # • SSH_HOST    – SSH host to connect to (overrides config.yaml)
+      # • SOCKS_PORT  – Port for the SOCKS proxy (overrides config.yaml)
+      # • PAC_PORT    – Port for the PAC server (overrides config.yaml)
       [[ -n $1 ]] && ssh_host=$1 && update_cfg   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
       [[ -n $2 ]] && socks_port=$2 && update_cfg "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
-      [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
+      [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
 
       [[ -n $3 ]] && pac_port=$3 && update_cfg   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
 
       while IFS= read -r tag; do
         ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
-        socks_port=$(load_port socks_proxy_port "$tag")
+        # Ensure ephemeral port is set
+        socks_port=$(load_port "socks_proxy_port" "$tag")
 
         # Start SOCKS proxy for chosen connection
         local process_name
-        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
         if is_running "$process_name" >/dev/null; then
           is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
         else
@@ -661,9 +733,9 @@ EOF
       # persist changes for ephemeral ports and given arguments
       write_pac_file
 
-      # Only start PAC server if not already running
+      # Only start PAC server if not already running. Ensure ephemeral port is set
       local pac_port
-      pac_port=$(load_port pac_server_port)
+      pac_port=$(load_port "pac_server_port")
       if is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false >/dev/null; then
         is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
       else
@@ -701,8 +773,7 @@ EOF
       ;;
 
     stop)
-      # Usage:
-      #   susops stop [--keep-ports] [--force]
+      # Usage: susops stop [--keep-ports] [--force]
       #
       # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
       #   stopped connection’s socks_proxy_port is reset to 0.
@@ -726,7 +797,7 @@ EOF
 
       while IFS= read -r tag; do
         local process_name
-        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
         stop_by_name "$process_name" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
       done < <(get_connection_tags)
 
@@ -738,21 +809,17 @@ EOF
       return 0
       ;;
 
-    ##########################################################################
-    # susops ps
-    # ─────────
-    # • Lists the PAC server once.
-    # • Then lists every configured connection, showing:
-    #     – SOCKS PID(s)   – port   – SSH host
-    # • Returns 0 if *all* expected services are running, 1 otherwise.
-    ##########################################################################
     ps)
+      # Usage: susops ps
+      #
+      # • Lists the PAC server once.
+      # • Then lists every configured connection, showing:
+      #     – SOCKS PID(s)   – port   – SSH host
+      # • Returns 0 if *all* expected services are running, 1 otherwise.
       stopped_count=0
       overall_count=0
 
-      ##################################################################
       # 1. Iterate over connections
-      ##################################################################
       while IFS= read -r tag; do
         local socks_port ssh_host
         socks_port=$(yq e ".connections[] | select(.tag==\"$tag\").socks_proxy_port" "$cfgfile")
@@ -762,14 +829,12 @@ EOF
         overall_count=$((overall_count+1))
 
         local process_name
-        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
         is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" \
                    "SSH host: ${ssh_host:-<unset>}" || stopped_count=$((stopped_count+1))
       done < <(get_connection_tags)
 
-      ##################################################################
       # 2. PAC server status (single global instance)
-      ##################################################################
       overall_count=$((overall_count+1))
       is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" \
                  "URL: http://localhost:${pac_port}/susops.pac" || stopped_count=$((stopped_count+1))
@@ -786,10 +851,16 @@ EOF
       ;;
 
     ls)
+      # Usage: susops ls
+      #
+      # • Lists the current configuration in YAML format.
       yq e "." "$cfgfile"
       ;;
 
     config)
+      # Usage: susops config
+      #
+      # • Opens the configuration file in the default editor.
       open "$cfgfile"
       ;;
 
@@ -828,18 +899,19 @@ EOF
       echo "Removed workspace '$workspace' and all susops configuration."
       ;;
 
-    ##########################################################################
-    # susops test  --all | TARGET
-    #
-    # • TARGET can be either a hostname in pac_hosts or a numeric port
-    #   (local or remote forward).  Example:  susops --conn dev test 5432
-    # • --all   tests every pac_host, every local forward, and every remote
-    #   forward for the *current* connection tag ($conn_tag).
-    #
-    # Exit status: 0 if every test passes, 1 otherwise.
-    ##########################################################################
     test)
-      [[ $1 ]] || { echo "Usage: susops test (--all|TARGET)"; return 1; }
+      # Usage: susops test --all|TARGET
+      #
+      # • --all   tests every pac_host, every local forward, and every remote
+      #   forward for the *current* connection tag ($conn_tag).
+      # • TARGET can be either a hostname in pac_hosts or a numeric port
+      #   (local or remote forward).  Example:  susops --conn dev test 5432
+      # • If TARGET is a port, it will be tested as both a local and remote
+      #   forward.
+      # • If TARGET is a hostname, it will be tested through the SOCKS proxy.
+      #
+      #  Exit status: 0 if every test passes, 1 otherwise.
+      [[ $1 ]] || { echo "Usage: susops test --all|TARGET"; return 1; }
 
       local failures=0
       local stopped=0
@@ -853,19 +925,15 @@ EOF
         socks_port=$(yq e ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port" "$cfgfile")
         ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
 
-        # ---------------------------------------------------------------------
         # Ensure the SOCKS proxy for this connection is running
-        # ---------------------------------------------------------------------
         local process_name
-        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
         if ! is_running "$process_name" true true "SOCKS5 proxy" "$socks_port" "SSH host: ${ssh_host:-<unset>}"; then
           stopped=$((stopped+1))
           continue
         fi
 
-        ##################################################################
         # Run tests
-        ##################################################################
         if [[ $1 == --all ]]; then
           # 1) All PAC hosts
           for host in $(yq e ".connections[]
@@ -896,10 +964,17 @@ EOF
       ;;
 
     chrome)
+      # Usage: susops chrome
+      #
+      # • Launches Google Chrome with the PAC file as a proxy.
       open -a "Google Chrome" --args --proxy-pac-url="http://localhost:$pac_port/susops.pac"
       ;;
 
     chrome-proxy-settings)
+      # Usage: susops chrome-proxy-settings
+      #
+      # • Opens the Chrome proxy settings page, click "Re-apply settings" to
+      #   read the PAC file content and apply rules.
       open -a "Google Chrome" "chrome://net-internals/#proxy"
       ;;
 
