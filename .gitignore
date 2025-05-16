@@ -1,2 +1,6 @@
+# config files for debugging
 config.yaml
 susops.pac
+
+# build artifacts
+susops

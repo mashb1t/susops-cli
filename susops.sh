@@ -74,11 +74,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # Run susops.sh with consistent arguments (connection and verbose tags)
   run_susops() {
     local args=("$@")
+    if [[ $conn_specified == true ]]; then
+      args=("-c" "$conn_tag" "${args[@]}")
+    fi
     if [[ $verbose == true ]]; then
       args=("-v" "${args[@]}")
     fi
-    susops -c "$conn_tag" "${args[@]}"
-#    ./susops.sh -c "$conn_tag" "${args[@]}"
+    susops "${args[@]}"
   }
 
   # Get connection tags from the config file
