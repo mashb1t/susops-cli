@@ -71,18 +71,6 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   pac_port=$(read_config ".pac_server_port")
   ssh_host=$(read_config ".connections[] | select(.tag==\"$conn_tag\").ssh_host")
 
-  # Run susops.sh with consistent arguments (connection and verbose tags)
-  run_susops() {
-    local args=("$@")
-    if [[ $conn_specified == true ]]; then
-      args=("-c" "$conn_tag" "${args[@]}")
-    fi
-    if [[ $verbose == true ]]; then
-      args=("-v" "${args[@]}")
-    fi
-    susops "${args[@]}"
-  }
-
   # Get connection tags from the config file
   # If a specific connection is specified, return only that tag
   get_connection_tags() {
@@ -396,14 +384,125 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     echo "$1" | xargs | tr ' ' '-'
   }
 
-  case $cmd in
-    help|--help|-h)
-      # Usage: susops help
-      #
-      # Show help message with usage instructions and available commands.
-      # This is the default command if no other command is specified.
+  start_susops() {
+    # Usage: start [SSH_HOST] [SOCKS_PORT] [PAC_PORT]
+    #
+    # • SSH_HOST    – SSH host to connect to (overrides config.yaml)
+    # • SOCKS_PORT  – Port for the SOCKS proxy (overrides config.yaml)
+    # • PAC_PORT    – Port for the PAC server (overrides config.yaml)
+    [[ -n $1 ]] && ssh_host=$1 && update_config   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
+    [[ -n $2 ]] && socks_port=$2 && update_config "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
+    [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
 
-      cat << EOF
+    [[ -n $3 ]] && pac_port=$3 && update_config   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
+
+    while IFS= read -r tag; do
+      ssh_host=$(read_config ".connections[] | select(.tag==\"$tag\").ssh_host")
+      # Ensure ephemeral port is set
+      socks_port=$(load_port "socks_proxy_port" "$tag")
+
+      # Start SOCKS proxy for chosen connection
+      local process_name
+      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+      if is_running "$process_name" >/dev/null; then
+        is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
+      else
+        local_args=$(build_args "local" "-L" "$tag")
+        remote_args=$(build_args "remote" "-R" "$tag")
+        local ssh_cmd=(autossh -M 0 -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host")
+        if ! command -v autossh >/dev/null 2>&1; then
+          $verbose && echo "autossh not found, falling back to ssh"
+          ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
+        fi
+
+        $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $process_name ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
+        nohup bash -c "exec -a $process_name ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
+        align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 proxy [$tag]:" "$!" "$socks_port" "$ssh_host"
+      fi
+    done < <(get_connection_tags)
+
+    # persist changes for ephemeral ports and given arguments
+    write_pac_file
+
+    # Only start PAC server if not already running. Ensure ephemeral port is set
+    local pac_port
+    pac_port=$(load_port "pac_server_port")
+    if is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false >/dev/null; then
+      is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
+    else
+      length=$(wc -c <"$pacfile")
+      nohup bash -c "exec -a $SUSOPS_PAC_LOOP_PROCESS_NAME bash -c \"while true; do
+          {
+            printf 'HTTP/1.1 200 OK\r\n'
+            printf 'Content-Type: application/x-ns-proxy-autoconfig\r\n'
+            printf 'Content-Length: %s\r\n' $length
+            printf 'Connection: close\r\n'
+            printf '\r\n'
+            cat \\\"$pacfile\\\"
+          } | exec -a $SUSOPS_PAC_NC_PROCESS_NAME nc -l $pac_port
+      done\"" </dev/null >/dev/null 2>&1 &
+
+      local pac_pid=$!
+
+      # ensure
+      local max_wait=5
+      local interval=0.1
+      steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
+      for ((i=0; i<steps; i++)); do
+        if nc_pid=$(pgrep -f "$SUSOPS_PAC_NC_PROCESS_NAME"); then
+          align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
+          break
+        fi
+        $verbose && printf "Waiting for PAC server to start... (%d/%d)\n" $((i + 1)) "$steps"
+        sleep "$interval"
+      done
+      if [[ $i -ge $steps ]]; then
+        align_printf "⚠️ partially started (PID %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
+        return 1
+      fi
+    fi
+  }
+
+  stop_susops() {
+    # Usage: susops stop [--keep-ports] [--force]
+    #
+    # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
+    #   stopped connection’s socks_proxy_port is reset to 0.
+    # • --force stops all connections and the PAC server no matter what's currently in the config
+    local keep_ports=false
+    local force=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --keep-ports) keep_ports=true; shift ;;
+        --force) force=true; shift ;;
+        *) shift ;;
+      esac
+    done
+
+    if $force; then
+      # Stop all connections and the PAC server
+      pkill -f "$SUSOPS_SSH_PROCESS_NAME"
+      pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
+      return 0
+    fi
+
+    while IFS= read -r tag; do
+      local process_name
+      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+      stop_by_name "$process_name" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
+    done < <(get_connection_tags)
+
+    # Stop the PAC server if no other connections are running
+    if ! pgrep -f $SUSOPS_SSH_PROCESS_NAME >/dev/null; then
+      stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true # keep port the same no matter if $keep_ports is set
+    fi
+
+    return 0
+  }
+
+  print_help() {
+  # Print help message
+  cat << EOF
 Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands:
   add-connection TAG SSH_HOST [SOCKS_PORT]                                        add a new connection
@@ -426,8 +525,16 @@ Options:
   -v, --verbose                                                                   enable verbose output
   -c, --connection TAG                                                            specify connection tag
 EOF
-      ;;
+  }
 
+  case $cmd in
+    help|--help|-h)
+      # Usage: susops help
+      #
+      # Show help message with usage instructions and available commands.
+      # This is the default command if no other command is specified.
+      print_help
+      ;;
 
     add-connection)
       # Usage: susops add-connection TAG SSH_HOST [SOCKS_PORT]
@@ -693,124 +800,16 @@ EOF
       # Usage: susops restart
       #
       # Restart the SOCKS proxy and PAC server without changing the ports.
-      run_susops stop --keep-ports --force
-      run_susops start
+      stop_susops --keep-ports --force
+      start_susops
       ;;
 
     start)
-      # Usage: start [SSH_HOST] [SOCKS_PORT] [PAC_PORT]
-      #
-      # • SSH_HOST    – SSH host to connect to (overrides config.yaml)
-      # • SOCKS_PORT  – Port for the SOCKS proxy (overrides config.yaml)
-      # • PAC_PORT    – Port for the PAC server (overrides config.yaml)
-      [[ -n $1 ]] && ssh_host=$1 && update_config   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
-      [[ -n $2 ]] && socks_port=$2 && update_config "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
-      [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
-
-      [[ -n $3 ]] && pac_port=$3 && update_config   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
-
-      while IFS= read -r tag; do
-        ssh_host=$(read_config ".connections[] | select(.tag==\"$tag\").ssh_host")
-        # Ensure ephemeral port is set
-        socks_port=$(load_port "socks_proxy_port" "$tag")
-
-        # Start SOCKS proxy for chosen connection
-        local process_name
-        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
-        if is_running "$process_name" >/dev/null; then
-          is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
-        else
-          local_args=$(build_args "local" "-L" "$tag")
-          remote_args=$(build_args "remote" "-R" "$tag")
-          local ssh_cmd=(autossh -M 0 -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host")
-          if ! command -v autossh >/dev/null 2>&1; then
-            $verbose && echo "autossh not found, falling back to ssh"
-            ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
-          fi
-
-          $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $process_name ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
-          nohup bash -c "exec -a $process_name ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
-          align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 proxy [$tag]:" "$!" "$socks_port" "$ssh_host"
-        fi
-      done < <(get_connection_tags)
-
-      # persist changes for ephemeral ports and given arguments
-      write_pac_file
-
-      # Only start PAC server if not already running. Ensure ephemeral port is set
-      local pac_port
-      pac_port=$(load_port "pac_server_port")
-      if is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false >/dev/null; then
-        is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
-      else
-        length=$(wc -c <"$pacfile")
-        nohup bash -c "exec -a $SUSOPS_PAC_LOOP_PROCESS_NAME bash -c \"while true; do
-            {
-              printf 'HTTP/1.1 200 OK\r\n'
-              printf 'Content-Type: application/x-ns-proxy-autoconfig\r\n'
-              printf 'Content-Length: %s\r\n' $length
-              printf 'Connection: close\r\n'
-              printf '\r\n'
-              cat \\\"$pacfile\\\"
-            } | exec -a $SUSOPS_PAC_NC_PROCESS_NAME nc -l $pac_port
-        done\"" </dev/null >/dev/null 2>&1 &
-
-        local pac_pid=$!
-
-        # ensure
-        local max_wait=5
-        local interval=0.1
-        steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
-        for ((i=0; i<steps; i++)); do
-          if nc_pid=$(pgrep -f "$SUSOPS_PAC_NC_PROCESS_NAME"); then
-            align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
-            break
-          fi
-          $verbose && printf "Waiting for PAC server to start... (%d/%d)\n" $((i + 1)) "$steps"
-          sleep "$interval"
-        done
-        if [[ $i -ge $steps ]]; then
-          align_printf "⚠️ partially started (PID %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
-          return 1
-        fi
-      fi
+      start_susops "$@"
       ;;
 
     stop)
-      # Usage: susops stop [--keep-ports] [--force]
-      #
-      # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
-      #   stopped connection’s socks_proxy_port is reset to 0.
-      # • --force stops all connections and the PAC server no matter what's currently in the config
-      local keep_ports=false
-      local force=false
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --keep-ports) keep_ports=true; shift ;;
-          --force) force=true; shift ;;
-          *) shift ;;
-        esac
-      done
-
-      if $force; then
-        # Stop all connections and the PAC server
-        pkill -f "$SUSOPS_SSH_PROCESS_NAME"
-        pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
-        return 0
-      fi
-
-      while IFS= read -r tag; do
-        local process_name
-        process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
-        stop_by_name "$process_name" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
-      done < <(get_connection_tags)
-
-      # Stop the PAC server if no other connections are running
-      if ! pgrep -f $SUSOPS_SSH_PROCESS_NAME >/dev/null; then
-        stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true # keep port the same no matter if $keep_ports is set
-      fi
-
-      return 0
+      stop_susops "$@"
       ;;
 
     ps)
@@ -995,7 +994,7 @@ EOF
       ;;
 
     *)
-      run_susops help
+      print_help
       return 1
   esac
 }
