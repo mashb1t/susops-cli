@@ -46,9 +46,18 @@ EOF
   [[ $1 ]] || { susops help; return 1; }
   local cmd=$1; shift
 
+  # Run yq in-place
+  read_config() {
+    yq e "$1" "$cfgfile"
+  }
+
+  update_config() {
+    yq e -i "$1" "$cfgfile";
+  }
+
   # Default to first connection if none specified
   if [[ -z $conn_tag ]]; then
-    conn_tag=$(yq e '.connections[0].tag' "$cfgfile")
+    conn_tag=$(read_config '.connections[0].tag')
     if [[ $conn_tag == "null" && $cmd != "add-connection" ]]; then
       echo "No connection specified and no default connection found."
       echo "Please add a connection using:
@@ -59,8 +68,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   fi
 
   # Initialize ports
-  pac_port=$(yq e ".pac_server_port" "$cfgfile")
-  ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
+  pac_port=$(read_config ".pac_server_port")
+  ssh_host=$(read_config ".connections[] | select(.tag==\"$conn_tag\").ssh_host")
 
   # Run susops.sh with consistent arguments (connection and verbose tags)
   run_susops() {
@@ -77,22 +86,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   get_connection_tags() {
     if $conn_specified; then
       # If a specific connection is specified, return only that tag
-      yq e ".connections[] | select(.tag==\"$conn_tag\").tag" "$cfgfile"
+      read_config ".connections[] | select(.tag==\"$conn_tag\").tag"
     else
       # Otherwise, return all connection tags
-      yq e '.connections[].tag' "$cfgfile"
+      read_config '.connections[].tag'
     fi
-  }
-
-
-
-  # Run yq in-place
-  read_cfg() {
-    yq e "$1" "$cfgfile"
-  }
-
-  update_cfg() {
-    yq e -i "$1" "$cfgfile";
   }
 
   ###############################################################################
@@ -113,7 +111,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     else
       filter=".connections[] | select(.tag==\"$conn_tag\").$key"
     fi
-    local cur=$(yq e "$filter" "$cfgfile" | head -1)
+    local cur=$(read_config "$filter" | head -1)
     if [[ $cur =~ ^[0-9]+$ ]] && [[ $cur -gt 0 ]]; then
       echo $cur
     else
@@ -121,9 +119,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       raw=$(head -c2 /dev/random | od -An -tu2 | tr -d ' ')
       port=$(( raw % 16384 + 49152 ))
       if [[ $key == pac_server_port ]]; then
-        update_cfg ".pac_server_port = $port"
+        update_config ".pac_server_port = $port"
       else
-        update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .${key} = $port)"
+        update_config ".connections[] |= (select(.tag==\"$conn_tag\") .${key} = $port)"
       fi
       echo $port
     fi
@@ -133,10 +131,10 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   write_pac_file() {
     {
       echo 'function FindProxyForURL(url, host) {'
-      for tag in $(yq e '.connections[].tag' "$cfgfile"); do
+      for tag in $(read_config '.connections[].tag'); do
         local socks_proxy_port
-        socks_proxy_port=$(yq e ".connections[] | select(.tag==\"$tag\").socks_proxy_port" "$cfgfile")
-        yq e ".connections[] | select(.tag==\"$tag\") | .pac_hosts[]" "$cfgfile" | while read -r host; do
+        socks_proxy_port=$(read_config ".connections[] | select(.tag==\"$tag\").socks_proxy_port")
+        read_config ".connections[] | select(.tag==\"$tag\") | .pac_hosts[]" | while read -r host; do
           echo "  if (host == '$host' || dnsDomainIs(host, '.$host')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
         done
       done
@@ -161,7 +159,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       [[ -z $src || -z $dst ]] && continue
       args+=("$flag" "${src}:localhost:${dst}")
     done < <(
-      yq e "
+      read_config "
         .connections[]
         | select(.tag == \"$conn_tag\")
         | (.forwards.$key // [])[]
@@ -273,7 +271,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
       # zero out the socks_proxy_port unless user asked to keep
       if [[ $keep_ports == false && -n "$tag" ]]; then
-        update_cfg "(.connections[] | select(.tag==\"$tag\")).socks_proxy_port = 0"
+        update_config "(.connections[] | select(.tag==\"$tag\")).socks_proxy_port = 0"
       fi
 
       align_printf "🛑 stopped" "${label:-Service}:"
@@ -299,34 +297,34 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local conn_tag=${2:-$conn_tag}
 
     local ssh_host socks_port
-    ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
-    socks_port=$(yq e ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port" "$cfgfile")
+    ssh_host=$(read_config ".connections[] | select(.tag==\"$conn_tag\").ssh_host")
+    socks_port=$(read_config ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port")
 
     if [[ $target =~ ^[0-9]+$ ]]; then
       # Target looks like a port → could be local or remote
-      if yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.local[]?
-               | select(.src == $target)" "$cfgfile" | grep -q . >/dev/null; then
+      if read_config ".connections[] | select(.tag==\"$conn_tag\").forwards.local[]?
+               | select(.src == $target)" | grep -q . >/dev/null; then
         # Local forward exists: test localhost:src
         $verbose && echo "Testing local forward $target on localhost"
         if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
           printf "✅ local:%s (localhost:%s → %s:%s)\n" \
                  "$target" "$target" "$ssh_host" \
-                 "$(yq e '.forwards.local[] | select(.src=='"$target"').dst' \
-                         <<<"$(yq e '.connections[] | select(.tag=="'"$conn_tag"'")' "$cfgfile")")"
+                 "$(read_config '.forwards.local[] | select(.src=='"$target"').dst' \
+                         <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
           printf "❌ local:%s unreachable\n" "$target"
           return 1
         fi
-      elif yq e ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[]?
-                 | select(.src == $target)" "$cfgfile" | grep -q . >/dev/null; then
+      elif read_config ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[]?
+                 | select(.src == $target)" | grep -q . >/dev/null; then
         # Remote forward exists: test via ssh on remote side
         $verbose && echo "Testing remote forward $target on $ssh_host:$target"
         if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
           printf "✅ remote:%s (%s:%s → localhost:%s)\n" \
                  "$target" "$ssh_host" "$target" \
-                 "$(yq e '.forwards.remote[] | select(.src=='"$target"').dst' \
-                         <<<"$(yq e '.connections[] | select(.tag=="'"$conn_tag"'")' "$cfgfile")")"
+                 "$(read_config '.forwards.remote[] | select(.src=='"$target"').dst' \
+                         <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
           printf "❌ remote:%s unreachable\n" "$target"
@@ -357,21 +355,21 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # Check if exact local/remote forward rule exists
   check_exact_rule() {
     # $1: src, $2: dst, $3: type (local|remote)
-    yq e ".connections[].forwards.$3[] | select(.src==\"$1\" and .dst==\"$2\")" "$cfgfile" | grep -q . && return 0
+    read_config ".connections[].forwards.$3[] | select(.src==\"$1\" and .dst==\"$2\")" | grep -q . && return 0
     return 1
   }
 
   # Check if a src port is configured for given type
   check_port_source() {
     # $1: port, $2: type (local|remote)
-    yq e ".connections[].forwards.$2[] | select(.src==\"$1\")" "$cfgfile" | grep -q . && return 0
+    read_config ".connections[].forwards.$2[] | select(.src==\"$1\")" | grep -q . && return 0
     return 1
   }
 
   # Check if a dst port is configured for given type
   check_port_target() {
     # $1: port, $2: type (local|remote)
-    yq e ".connections[].forwards.$2[] | select(.dst==\"$1\")" "$cfgfile" | grep -q . && return 0
+    read_config ".connections[].forwards.$2[] | select(.dst==\"$1\")" | grep -q . && return 0
     return 1
   }
 
@@ -440,7 +438,7 @@ EOF
       tag=$(echo "$tag" | xargs)
 
       # Abort if tag already present
-      if yq e ".connections[] | select(.tag == \"$tag\")" "$cfgfile" | grep -q . >/dev/null; then
+      if read_config ".connections[] | select(.tag == \"$tag\")" | grep -q . >/dev/null; then
         echo "Error: connection '$tag' already exists"
         return 1
       fi
@@ -452,7 +450,7 @@ EOF
       elif ! validate_port_in_range "$socks_proxy_port"; then
         echo "Error: socks_proxy_port must be a valid port in range 1 to 65535"
         return 1
-      elif yq e ".connections[] | select(.socks_proxy_port == $socks_proxy_port)" "$cfgfile" | grep -q . >/dev/null; then
+      elif read_config ".connections[] | select(.socks_proxy_port == $socks_proxy_port)" | grep -q . >/dev/null; then
         echo "Error: socks_proxy_port $socks_proxy_port is already in use by another connection"
         return 1
       fi
@@ -464,7 +462,7 @@ EOF
       fi
 
       # Add connection to config file
-      update_cfg ".connections += [{
+      update_config ".connections += [{
         \"tag\": \"$tag\",
         \"ssh_host\": \"$ssh_host\",
         \"socks_proxy_port\": $socks_proxy_port,
@@ -488,7 +486,7 @@ EOF
       local tag=$1
       [[ -z $tag ]] && { echo "Usage: susops rm-connection TAG"; return 1; }
 
-      if ! yq e ".connections[] | select(.tag == \"$tag\")" "$cfgfile" | grep -q . >/dev/null; then
+      if ! read_config ".connections[] | select(.tag == \"$tag\")" | grep -q . >/dev/null; then
         align_printf "❌ not found" "Connection [$tag]:"
         return 1
       fi
@@ -500,9 +498,9 @@ EOF
 
       # check if connection has hosts
       local has_hosts
-      has_hosts=$(yq e ".connections[] | select(.tag == \"$tag\") | .pac_hosts" "$cfgfile" | grep -q . >/dev/null)
+      has_hosts=$(read_config ".connections[] | select(.tag == \"$tag\") | .pac_hosts" | grep -q . >/dev/null)
       # delete connection
-      update_cfg "del(.connections[] | select(.tag == \"$tag\"))"
+      update_config "del(.connections[] | select(.tag == \"$tag\"))"
 
       local hint=""
       if [[ $has_hosts ]]; then
@@ -557,7 +555,7 @@ EOF
             echo "Local port $lport is already in use on localhost"
             return 1
           else
-            update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.local += [{\"tag\": \"$tag\", \"src\": $lport, \"dst\": $rport}])"
+            update_config ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.local += [{\"tag\": \"$tag\", \"src\": $lport, \"dst\": $rport}])"
             align_printf "✅ Added local forward [${tag}] localhost:${lport} → ${ssh_host}:${rport}" "Connection [$conn_tag]:"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
@@ -597,7 +595,7 @@ EOF
             echo "Remote port $rport is already in use on $ssh_host"
             return 1
           else
-            update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.remote += [{\"tag\": \"$tag\", \"src\": $rport, \"dst\": $lport}])"
+            update_config ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.remote += [{\"tag\": \"$tag\", \"src\": $rport, \"dst\": $lport}])"
             align_printf "✅ Added remote forward [${tag}] ${ssh_host}:${rport} → localhost:${lport}" "Connection [$conn_tag]:"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
@@ -613,12 +611,12 @@ EOF
 
           host=$(echo "$host" | sed -E 's/^[^:]+:\/\///; s/\/.*//')
 
-          if yq e ".connections[].pac_hosts[] | select(.==\"$host\")" "$cfgfile" | grep -q .; then
+          if read_config ".connections[].pac_hosts[] | select(.==\"$host\")" | grep -q .; then
             echo "Error: PAC host '$host' already exists in a connection"
             return 1
           fi
 
-          update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .pac_hosts += [\"$host\"])"
+          update_config ".connections[] |= (select(.tag==\"$conn_tag\") .pac_hosts += [\"$host\"])"
           write_pac_file
 
           align_printf "✅ Added $host" "Connection [$conn_tag]:"
@@ -642,7 +640,7 @@ EOF
           local lport=$2
           [[ $lport ]] || { echo "Usage: susops rm -l LOCAL_PORT"; return 1; }
           if check_port_source "$lport" "local"; then
-            update_cfg "del(.connections[].forwards.local[] | select(.src==$lport))"
+            update_config "del(.connections[].forwards.local[] | select(.src==$lport))"
             echo "Removed local forward localhost:$lport"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
@@ -656,7 +654,7 @@ EOF
           local rport=$2
           [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
           if check_port_source "$rport" "remote"; then
-            update_cfg "del(.connections[].forwards.remote[] | select(.src==$rport))"
+            update_config "del(.connections[].forwards.remote[] | select(.src==$rport))"
             echo "Removed remote forward $ssh_host:$rport"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
@@ -670,8 +668,8 @@ EOF
           local host=$1
           [[ $host ]] || { echo "Usage: rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]"; return 1; }
 
-          if yq e ".connections[].pac_hosts[] | select(.==\"$host\")" "$cfgfile" | grep -q .; then
-            update_cfg "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
+          if read_config ".connections[].pac_hosts[] | select(.==\"$host\")" | grep -q .; then
+            update_config "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
             write_pac_file
             echo "Removed $host"
             is_running "$process_name" && echo "Please reload your browser proxy settings."
@@ -699,14 +697,14 @@ EOF
       # • SSH_HOST    – SSH host to connect to (overrides config.yaml)
       # • SOCKS_PORT  – Port for the SOCKS proxy (overrides config.yaml)
       # • PAC_PORT    – Port for the PAC server (overrides config.yaml)
-      [[ -n $1 ]] && ssh_host=$1 && update_cfg   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
-      [[ -n $2 ]] && socks_port=$2 && update_cfg "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
+      [[ -n $1 ]] && ssh_host=$1 && update_config   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
+      [[ -n $2 ]] && socks_port=$2 && update_config "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
       [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
 
-      [[ -n $3 ]] && pac_port=$3 && update_cfg   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
+      [[ -n $3 ]] && pac_port=$3 && update_config   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
 
       while IFS= read -r tag; do
-        ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
+        ssh_host=$(read_config ".connections[] | select(.tag==\"$tag\").ssh_host")
         # Ensure ephemeral port is set
         socks_port=$(load_port "socks_proxy_port" "$tag")
 
@@ -822,8 +820,8 @@ EOF
       # 1. Iterate over connections
       while IFS= read -r tag; do
         local socks_port ssh_host
-        socks_port=$(yq e ".connections[] | select(.tag==\"$tag\").socks_proxy_port" "$cfgfile")
-        ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
+        socks_port=$(read_config ".connections[] | select(.tag==\"$tag\").socks_proxy_port")
+        ssh_host=$(read_config ".connections[] | select(.tag==\"$tag\").ssh_host")
 
         # SOCKS / autossh status
         overall_count=$((overall_count+1))
@@ -854,7 +852,7 @@ EOF
       # Usage: susops ls
       #
       # • Lists the current configuration in YAML format.
-      yq e "." "$cfgfile"
+      read_config "."
       ;;
 
     config)
@@ -922,8 +920,8 @@ EOF
         # Pull runtime values for this connection
 
         local socks_port ssh_host
-        socks_port=$(yq e ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port" "$cfgfile")
-        ssh_host=$(yq e ".connections[] | select(.tag==\"$conn_tag\").ssh_host" "$cfgfile")
+        socks_port=$(read_config ".connections[] | select(.tag==\"$conn_tag\").socks_proxy_port")
+        ssh_host=$(read_config ".connections[] | select(.tag==\"$conn_tag\").ssh_host")
 
         # Ensure the SOCKS proxy for this connection is running
         local process_name
@@ -936,25 +934,23 @@ EOF
         # Run tests
         if [[ $1 == --all ]]; then
           # 1) All PAC hosts
-          for host in $(yq e ".connections[]
-                               | select(.tag==\"$tag\")
-                               | (.pac_hosts // [])[]" "$cfgfile"); do
+          for host in $(read_config ".connections[] | select(.tag==\"$tag\") | (.pac_hosts // [])[]"); do
             test_entry "$host" "$tag" || failures=$((failures+1))
           done
 
           # 2) All local forwards (by src port)
           while IFS= read -r port; do
             test_entry "$port" "$tag" || failures=$((failures+1))
-          done < <(yq e ".connections[]
+          done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
-              | (.forwards.local // [])[].src" "$cfgfile")
+              | (.forwards.local // [])[].src")
 
           # 3) All remote forwards (by src port on remote)
           while IFS= read -r port; do
             test_entry "$port" "$tag" || failures=$((failures+1))
-          done < <(yq e ".connections[]
+          done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
-              | (.forwards.remote // [])[].src" "$cfgfile")
+              | (.forwards.remote // [])[].src")
         else
           # Single target
           test_entry "$1" || failures=1
