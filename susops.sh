@@ -170,6 +170,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     echo "${args[@]}"
   }
 
+  # Align printf output for better readability
   align_printf() {
     local format=$1; shift
     local args=("$@")
@@ -295,6 +296,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   test_entry() {
     local target=$1
     local conn_tag=${2:-$conn_tag}
+    local label=${3:-""}
 
     local ssh_host socks_port
     ssh_host=$(read_config ".connections[] | select(.tag==\"$conn_tag\").ssh_host")
@@ -307,13 +309,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         # Local forward exists: test localhost:src
         $verbose && echo "Testing local forward $target on localhost"
         if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ local:%s (localhost:%s → %s:%s)\n" \
+          align_printf "✅ local:%s (localhost:%s → %s:%s)" "$label" \
                  "$target" "$target" "$ssh_host" \
                  "$(read_config '.forwards.local[] | select(.src=='"$target"').dst' \
                          <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
-          printf "❌ local:%s unreachable\n" "$target"
+          align_printf "❌ localhost:%s unreachable" "$label" "$target"
           return 1
         fi
       elif read_config ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[]?
@@ -321,17 +323,17 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         # Remote forward exists: test via ssh on remote side
         $verbose && echo "Testing remote forward $target on $ssh_host:$target"
         if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
-          printf "✅ remote:%s (%s:%s → localhost:%s)\n" \
+          align_printf "✅ remote:%s (%s:%s → localhost:%s)" "$label" \
                  "$target" "$ssh_host" "$target" \
                  "$(read_config '.forwards.remote[] | select(.src=='"$target"').dst' \
                          <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
-          printf "❌ remote:%s unreachable\n" "$target"
+          align_printf "❌ $ssh_host:%s unreachable" "$label" "$target"
           return 1
         fi
       else
-        printf "❌ Port %s not found in forwards\n" "$target"
+        align_printf "❌ Port %s not found in forwards" "$label" "$target"
         return 1
       fi
     else
@@ -339,9 +341,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       if curl -s -k --max-time 5 \
              --proxy "socks5h://127.0.0.1:$socks_port" \
              "https://$target" >/dev/null 2>&1; then
-        printf "✅ %s via SOCKS\n" "$target"; return 0
+        align_printf "✅ %s via SOCKS" "$label" "$target"
+        return 0
       else
-        printf "❌ %s via SOCKS\n" "$target"; return 1
+        align_printf "❌ %s via SOCKS" "$label" "$target"
+        return 1
       fi
     fi
   }
@@ -375,7 +379,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
   # Check if a port is in use on localhost or remote host
   check_port_in_use() {
-    # $1: port, $2 (optional): host (defaults to localhost)
+    # $1: port, $2: host (optional, defaults to localhost)
     local port=$1 host=${2:-localhost}
     if [[ "$host" == localhost ]]; then
       lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
@@ -620,7 +624,7 @@ EOF
           write_pac_file
 
           align_printf "✅ Added $host" "Connection [$conn_tag]:"
-          is_running "$process_name" && (test_entry "$host"; echo "Please reload your browser proxy settings.")
+          is_running "$process_name" && (test_entry "$host" "$conn_tag" "Connectivity check:"; echo "Please reload your browser proxy settings.")
           return 0
       esac
       ;;
@@ -932,21 +936,28 @@ EOF
         fi
 
         # Run tests
+
         if [[ $1 == --all ]]; then
+          local first=true
           # 1) All PAC hosts
-          for host in $(read_config ".connections[] | select(.tag==\"$tag\") | (.pac_hosts // [])[]"); do
+          while read -r host; do
+            [[ $first == true ]] && echo "PAC hosts:" && first=false
             test_entry "$host" "$tag" || failures=$((failures+1))
-          done
+          done < <(read_config ".connections[] | select(.tag==\"$tag\") | (.pac_hosts // [])[]")
 
           # 2) All local forwards (by src port)
+          first=true
           while IFS= read -r port; do
+            [[ $first == true ]] && echo "Local forwards:" && first=false
             test_entry "$port" "$tag" || failures=$((failures+1))
           done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
               | (.forwards.local // [])[].src")
 
           # 3) All remote forwards (by src port on remote)
+          first=true
           while IFS= read -r port; do
+            [[ $first == true ]] && echo "Remote forwards:" && first=false
             test_entry "$port" "$tag" || failures=$((failures+1))
           done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
