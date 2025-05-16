@@ -348,6 +348,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
+  sanitize_process_name() {
+    # $1: process name
+    echo "$1" | xargs | tr ' ' '-'
+  }
+
   case $cmd in
     help|--help|-h)
       cat << EOF
@@ -439,7 +444,9 @@ EOF
       fi
 
        # Stop tunnel if still running
-      stop_by_name "susops-ssh-$tag" "SOCKS5 proxy [$tag]" false "$tag" >/dev/null
+      local process_name
+      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+      stop_by_name "$process_name" "SOCKS5 proxy [$tag]" false "$tag" >/dev/null
 
       # check if connection has hosts
       local has_hosts
@@ -457,6 +464,9 @@ EOF
       ;;
 
     add)
+      local process_name
+      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+
       case "$1" in
         -l)
           local lport=$2 rport=$3 tag=${4:-""}
@@ -493,7 +503,7 @@ EOF
           else
             update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.local += [{\"tag\": \"$tag\", \"src\": $lport, \"dst\": $rport}])"
             align_printf "✅ Added local forward [${tag}] localhost:${lport} → ${ssh_host}:${rport}" "Connection [$conn_tag]:"
-            is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
+            is_running "$process_name" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -533,7 +543,7 @@ EOF
           else
             update_cfg ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.remote += [{\"tag\": \"$tag\", \"src\": $rport, \"dst\": $lport}])"
             align_printf "✅ Added remote forward [${tag}] ${ssh_host}:${rport} → localhost:${lport}" "Connection [$conn_tag]:"
-            is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
+            is_running "$process_name" && echo "Restart proxy to apply"
             return 0
           fi
           ;;
@@ -556,12 +566,14 @@ EOF
           write_pac_file
 
           align_printf "✅ Added $host" "Connection [$conn_tag]:"
-          is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && (test_entry "$host"; echo "Please reload your browser proxy settings.")
+          is_running "$process_name" && (test_entry "$host"; echo "Please reload your browser proxy settings.")
           return 0
       esac
       ;;
 
     rm)
+      local process_name
+      process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
       case "$1" in
         -l)
           local lport=$2
@@ -569,7 +581,7 @@ EOF
           if check_port_source "$lport" "local"; then
             update_cfg "del(.connections[].forwards.local[] | select(.src==$lport))"
             echo "Removed local forward localhost:$lport"
-            is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
+            is_running "$process_name" && echo "Restart proxy to apply"
             return 0
           else
             echo "No local forward for localhost:$lport"
@@ -583,7 +595,7 @@ EOF
           if check_port_source "$rport" "remote"; then
             update_cfg "del(.connections[].forwards.remote[] | select(.src==$rport))"
             echo "Removed remote forward $ssh_host:$rport"
-            is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Restart proxy to apply"
+            is_running "$process_name" && echo "Restart proxy to apply"
             return 0
           else
             echo "No remote forward for $ssh_host:$rport"
@@ -599,7 +611,7 @@ EOF
             update_cfg "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
             write_pac_file
             echo "Removed $host"
-            is_running "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" && echo "Please reload your browser proxy settings."
+            is_running "$process_name" && echo "Please reload your browser proxy settings."
             return 0
           else
             echo "$host not found"
@@ -618,17 +630,19 @@ EOF
     start)
       [[ -n $1 ]] && ssh_host=$1 && update_cfg   "(.connections[] | select(.tag==\"$conn_tag\")).ssh_host = \"$ssh_host\""
       [[ -n $2 ]] && socks_port=$2 && update_cfg "(.connections[] | select(.tag==\"$conn_tag\")).socks_proxy_port = $socks_port"
-      [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag" "SOCKS5 proxy [$conn_tag]" true
+      [[ -n $1 ]] || [[ -n $2 ]] && stop_by_name "$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")" "SOCKS5 proxy [$conn_tag]" true
 
       [[ -n $3 ]] && pac_port=$3 && update_cfg   ".pac_server_port = $pac_port" && stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true
 
-      echo "$(get_connection_tags)" | while IFS= read -r tag; do
+      while IFS= read -r tag; do
         ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
         socks_port=$(load_port socks_proxy_port "$tag")
 
         # Start SOCKS proxy for chosen connection
-        if is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" >/dev/null; then
-          is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
+        local process_name
+        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        if is_running "$process_name" >/dev/null; then
+          is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
         else
           local_args=$(build_args "local" "-L" "$tag")
           remote_args=$(build_args "remote" "-R" "$tag")
@@ -638,11 +652,11 @@ EOF
             ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
           fi
 
-          $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $SUSOPS_SSH_PROCESS_NAME ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
-          nohup bash -c "exec -a $SUSOPS_SSH_PROCESS_NAME-$tag ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
+          $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $process_name ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
+          nohup bash -c "exec -a $process_name ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
           align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 proxy [$tag]:" "$!" "$socks_port" "$ssh_host"
         fi
-      done
+      done < <(get_connection_tags)
 
       # persist changes for ephemeral ports and given arguments
       write_pac_file
@@ -717,22 +731,25 @@ EOF
     # • Returns 0 if *all* expected services are running, 1 otherwise.
     ##########################################################################
     ps)
-      local stopped_count=0
-      local overall_count=0
+      stopped_count=0
+      overall_count=0
 
       ##################################################################
       # 1. Iterate over connections
       ##################################################################
-      echo "$(get_connection_tags)" | while IFS= read -r tag; do
+      while IFS= read -r tag; do
         local socks_port ssh_host
         socks_port=$(yq e ".connections[] | select(.tag==\"$tag\").socks_proxy_port" "$cfgfile")
         ssh_host=$(yq e ".connections[] | select(.tag==\"$tag\").ssh_host" "$cfgfile")
 
         # SOCKS / autossh status
         overall_count=$((overall_count+1))
-        is_running "$SUSOPS_SSH_PROCESS_NAME-$tag" true true "SOCKS5 proxy [$tag]" "$socks_port" \
+
+        local process_name
+        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" \
                    "SSH host: ${ssh_host:-<unset>}" || stopped_count=$((stopped_count+1))
-      done
+      done < <(get_connection_tags)
 
       ##################################################################
       # 2. PAC server status (single global instance)
@@ -811,7 +828,7 @@ EOF
       local failures=0
       local stopped=0
 
-      echo "$(get_connection_tags)" | while IFS= read -r tag; do
+      while IFS= read -r tag; do
         echo "----------------------------------------"
         echo "Testing connection '$tag'"
         # Pull runtime values for this connection
@@ -823,7 +840,9 @@ EOF
         # ---------------------------------------------------------------------
         # Ensure the SOCKS proxy for this connection is running
         # ---------------------------------------------------------------------
-        if ! is_running "$SUSOPS_SSH_PROCESS_NAME-${tag}" true true "SOCKS5 proxy" "$socks_port" "SSH host: ${ssh_host:-<unset>}"; then
+        local process_name
+        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        if ! is_running "$process_name" true true "SOCKS5 proxy" "$socks_port" "SSH host: ${ssh_host:-<unset>}"; then
           stopped=$((stopped+1))
           continue
         fi
@@ -840,23 +859,23 @@ EOF
           done
 
           # 2) All local forwards (by src port)
-          yq e ".connections[]
-                | select(.tag==\"$tag\")
-                | (.forwards.local // [])[].src" "$cfgfile" | while read -r port; do
+          while IFS= read -r port; do
             test_entry "$port" "$tag" || failures=$((failures+1))
-          done
+          done < <(yq e ".connections[]
+              | select(.tag==\"$tag\")
+              | (.forwards.local // [])[].src" "$cfgfile")
 
           # 3) All remote forwards (by src port on remote)
-          yq e ".connections[]
-                | select(.tag==\"$tag\")
-                | (.forwards.remote // [])[].src" "$cfgfile" | while read -r port; do
+          while IFS= read -r port; do
             test_entry "$port" "$tag" || failures=$((failures+1))
-          done
+          done < <(yq e ".connections[]
+              | select(.tag==\"$tag\")
+              | (.forwards.remote // [])[].src" "$cfgfile")
         else
           # Single target
           test_entry "$1" || failures=1
         fi
-      done
+      done < <(get_connection_tags)
       [[ $failures -eq 0 ]] && return 0 || return 1
       ;;
 
