@@ -13,10 +13,11 @@ susops() {
   local -r cfgfile="$workspace/config.yaml"
 
   # Define process names for easier identification
-  local -r SUSOPS_SSH_PROCESS_NAME="susops-ssh"
-  local -r SUSOPS_PAC_LOOP_PROCESS_NAME="susops-pac-loop"
-  local -r SUSOPS_PAC_NC_PROCESS_NAME="susops-pac-nc"
-  local -r SUSOPS_PAC_UNIFIED_PROCESS_NAME="susops-pac"
+  local -r SUSOPS_PROCESS_NAME_BASE="susops"
+  local -r SUSOPS_SSH_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-ssh"
+  local -r SUSOPS_PAC_LOOP_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac-loop"
+  local -r SUSOPS_PAC_NC_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac-nc"
+  local -r SUSOPS_PAC_UNIFIED_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac"
 
   mkdir -p "$workspace"
 
@@ -783,7 +784,12 @@ EOF
       fi
 
       # ensure all susops processes are stopped
-      pkill -f "susops"
+      # do not use $SUSOPS_PROCESS_NAME_BASE here as this will also stop
+      # - all browsers using the pac server url
+      # - VCS applications
+
+      pkill -f "$SUSOPS_SSH_PROCESS_NAME"
+      pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
 
       rm -rf "$workspace"
       echo "Removed workspace '$workspace' and all susops configuration."
