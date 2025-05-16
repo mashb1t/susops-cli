@@ -574,7 +574,7 @@ EOF
             return 1
           }
 
-          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
+          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$rport"
           tag=$(echo "$tag" | xargs)
 
           if ! validate_port_in_range "$rport"; then
