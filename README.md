@@ -42,6 +42,7 @@ It allows you to create a SOCKS5 proxy and forward ports over SSH, making it eas
 ```bash
 brew tap mashb1t/susops
 brew install susops
+brew link susops
 ```
 
 For updating, simply run these commands:
