@@ -363,7 +363,7 @@ Commands:
   add [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]] [HOST]  add hostname or port forward, schema source → target
   rm  [-l LOCAL_PORT|TAG]               [-r REMOTE_PORT|TAG]              [HOST]  remove hostname or port forward
   start   [SSH_HOST] [SOCKS_PORT] [PAC_PORT]                                      start proxy and PAC server
-  stop    [--keep-ports]                                                          stop proxy and server (if no other proxies are running)
+  stop    [--keep-ports] [--force]                                                stop proxy and server (if no other proxies are running)
   restart                                                                         stop and start (preserves ports)
   ps                                                                              show status, ports, and forwards
   ls                                                                              output current config
@@ -702,17 +702,33 @@ EOF
 
     stop)
       # Usage:
-      #   susops stop [--keep-ports]
+      #   susops stop [--keep-ports] [--force]
       #
       # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
       #   stopped connection’s socks_proxy_port is reset to 0.
-
+      # • --force stops all connections and the PAC server no matter what's currently in the config
       local keep_ports=false
-      [[ $1 == '--keep-ports' ]] && keep_ports=true && shift
-
-      echo "$(get_connection_tags)" | while IFS= read -r tag; do
-        stop_by_name "$SUSOPS_SSH_PROCESS_NAME-$tag" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
+      local force=false
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --keep-ports) keep_ports=true; shift ;;
+          --force) force=true; shift ;;
+          *) shift ;;
+        esac
       done
+
+      if $force; then
+        # Stop all connections and the PAC server
+        pkill -f "$SUSOPS_SSH_PROCESS_NAME"
+        pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
+        return 0
+      fi
+
+      while IFS= read -r tag; do
+        local process_name
+        process_name=$(sanitize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
+        stop_by_name "$process_name" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
+      done < <(get_connection_tags)
 
       # Stop the PAC server if no other connections are running
       if ! pgrep -f $SUSOPS_SSH_PROCESS_NAME >/dev/null; then
