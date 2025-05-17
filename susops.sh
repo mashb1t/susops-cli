@@ -405,19 +405,41 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       local process_name
       process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
       if is_running "$process_name" >/dev/null; then
-        is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host: $ssh_host"
+        is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" "SSH host $ssh_host"
       else
         local_args=$(build_args "local" "-L" "$tag")
         remote_args=$(build_args "remote" "-R" "$tag")
-        local ssh_cmd=(autossh -M 0 -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host")
-        if ! command -v autossh >/dev/null 2>&1; then
+
+        common_flags=(
+          -N                           # no remote shell
+          -T                           # disable pty
+          -D "$socks_port"             # start with SOCKS
+          -o ExitOnForwardFailure=yes  # exit if port forwarding fails
+          -o ServerAliveInterval=30    # send keepalive every 30 seconds
+          -o ServerAliveCountMax=3     # exit after 3 failed keepalives
+          "${local_args[@]}"
+          "${remote_args[@]}"
+          "$ssh_host"
+        )
+
+        if command -v autossh &>/dev/null; then
+          ssh_binary=(autossh -M 0)
+        else
           $verbose && echo "autossh not found, falling back to ssh"
-          ssh_cmd=( ssh -N -T -D "$socks_port" "${local_args[@]}" "${remote_args[@]}" "$ssh_host" )
+          ssh_binary=(ssh)
         fi
 
-        $verbose && printf "Full SSH command: %s\n" "nohup bash -c 'exec -a $process_name ${ssh_cmd[*]}' </dev/null >/dev/null 2>&1 &"
-        nohup bash -c "exec -a $process_name ${ssh_cmd[*]}" </dev/null >/dev/null 2>&1 &
-        align_printf "🚀 started (PID %s, port %s, SSH host: %s)" "SOCKS5 proxy [$tag]:" "$!" "$socks_port" "$ssh_host"
+        inner_cmd=( exec -a "$process_name" "${ssh_binary[@]}" "${common_flags[@]}" )
+        nohup bash -c "${inner_cmd[*]}" </dev/null >/dev/null 2>&1 &
+        process_pid=$!
+
+        if $verbose; then
+          quoted_inner=$(IFS=' '; echo "${inner_cmd[*]}" | tr -s ' ')
+          full_cmd="nohup bash -c '$quoted_inner' </dev/null >/dev/null 2>&1 &"
+          echo "Full SSH command: $full_cmd"
+        fi
+
+        align_printf "🚀 started (PID %s, port %s, SSH host %s)" "SOCKS5 proxy [$tag]:" "$process_pid" "$socks_port" "$ssh_host"
       fi
     done < <(get_connection_tags)
 
@@ -428,7 +450,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local pac_port
     pac_port=$(load_port "pac_server_port")
     if is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false >/dev/null; then
-      is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL: http://localhost:$pac_port/susops.pac"
+      is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" "URL http://localhost:$pac_port/susops.pac"
     else
       length=$(wc -c <"$pacfile")
       nohup bash -c "exec -a $SUSOPS_PAC_LOOP_PROCESS_NAME bash -c \"while true; do
@@ -834,13 +856,13 @@ EOF
         local process_name
         process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
         is_running "$process_name" true true "SOCKS5 proxy [$tag]" "$socks_port" \
-                   "SSH host: ${ssh_host:-<unset>}" || stopped_count=$((stopped_count+1))
+                   "SSH host ${ssh_host:-<unset>}" || stopped_count=$((stopped_count+1))
       done < <(get_connection_tags)
 
       # 2. PAC server status (single global instance)
       overall_count=$((overall_count+1))
       is_running "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" false true "PAC server" "$pac_port" \
-                 "URL: http://localhost:${pac_port}/susops.pac" || stopped_count=$((stopped_count+1))
+                 "URL http://localhost:${pac_port}/susops.pac" || stopped_count=$((stopped_count+1))
 
       if [[ $stopped_count -eq 0 ]]; then
         return 0
@@ -931,7 +953,7 @@ EOF
         # Ensure the SOCKS proxy for this connection is running
         local process_name
         process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$tag")
-        if ! is_running "$process_name" true true "SOCKS5 proxy" "$socks_port" "SSH host: ${ssh_host:-<unset>}"; then
+        if ! is_running "$process_name" true true "SOCKS5 proxy" "$socks_port" "SSH host ${ssh_host:-<unset>}"; then
           stopped=$((stopped+1))
           continue
         fi
