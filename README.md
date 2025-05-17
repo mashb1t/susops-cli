@@ -86,14 +86,15 @@ so start
 
 ## Explanation
 
-`so` can be used to create a **SOCKS5 proxy** and **remote port forwarder** over SSH.
+SusOps can be used to create a **SOCKS5 proxy** and **remote port forwarder** over SSH.
+It uses [autossh](https://www.harding.motd.ca/autossh/) (when installed) to automatically restart the SSH connection if it drops.
 
-It’s designed to be simple and effective for developers needing to tunnel traffic through a remote server.:
+The tool is designed to be simple and effective for users needing to tunnel traffic through a remote server.:
 1. **Dynamic SOCKS5 forwarding** (`ssh -N -D <socks_port>`)
 2. **remote port forwarding** (`-R <remote_port>:localhost:<local_port>`)
 3. **PAC file** and built-in HTTP server for serving browser proxy settings to Chrome/Firefox.
 
-Susops supports multiple simultaneous connections to different hosts, and you can add/remove port forwards and hosts at any time.
+SusOps supports multiple simultaneous connections to different hosts, and you can add/remove port forwards and hosts at any time.
 
 ## SOCKS5 Proxy
 ### What it does
@@ -117,7 +118,8 @@ so restart
 Launch a browser (only once per session) to pick up the PAC file:
 
 ```bash
-so chrome          # or
+so chrome
+# or
 so firefox
 ```
 
@@ -188,9 +190,9 @@ if (host === "example.com" || dnsDomainIs(host, ".example.com"))
 
 This condition matches the exact domain (example.com) and one level of subdomains (e.g., sub.example.com).
 It does not include two or more levels of subdomains (e.g., sub.sub.example.com).
-If you want to include those, you can add another rule.
+If you want to include those, feel free to add another rule.
 
-Only matching (sub)domains go through the SOCKS proxy; others use direct connections.
+Only matching (sub)domains are tunneled through the SOCKS proxy. Others use direct connections.
 
 </details>
 
@@ -200,7 +202,7 @@ Only matching (sub)domains go through the SOCKS proxy; others use direct connect
 See https://www.ssh.com/academy/ssh/tunneling-example#local-forwarding
 
 1. **During `so start`**
-   - Reads each line, builds `ssh` args:
+   - Reads each line in the config, builds `ssh` args:
 
      ```text
      -L 3000:localhost:8000
@@ -254,7 +256,7 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
     Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
 - **Port in use**
-  - If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rrm <port>`.
+  - If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rm -r <port>`.
 
 - **Tests are failing**
   - Ensure `curl` is installed and available in your PATH.
