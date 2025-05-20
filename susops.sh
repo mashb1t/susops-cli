@@ -105,9 +105,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     if [[ $cur =~ ^[0-9]+$ ]] && [[ $cur -gt 0 ]]; then
       echo $cur
     else
-      local raw port
-      raw=$(head -c2 /dev/random | od -An -tu2 | tr -d ' ')
-      port=$(( raw % 16384 + 49152 ))
+      local port
+      port=$(get_random_free_port)
       if [[ $key == pac_server_port ]]; then
         update_config ".pac_server_port = $port"
       else
@@ -365,6 +364,18 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # $1: port, $2: type (local|remote)
     read_config ".connections[].forwards.$2[] | select(.dst==\"$1\")" | grep -q . && return 0
     return 1
+  }
+
+  get_random_free_port() {
+    local port raw
+    while true; do
+      raw=$(head -c2 /dev/random | od -An -tu2 | tr -d ' ')
+      port=$(( raw % 16384 + 49152 ))
+      if ! check_port_in_use "$port"; then
+        echo "$port"
+        return
+      fi
+    done
   }
 
   # Check if a port is in use on localhost or remote host
