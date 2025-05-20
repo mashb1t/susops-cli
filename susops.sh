@@ -601,11 +601,26 @@ EOF
         return 1
       fi
 
+      local port_temp
+      port_temp=$(get_random_free_port)
+
+      ssh -q \
+          -f \
+          -o BatchMode=yes \
+          -o ConnectTimeout=5 \
+          -o ExitOnForwardFailure=yes \
+          -N -T \
+          -L ${port_temp}:127.0.0.1:22 \
+          "$ssh_host"
+
       # Test ssh connection to host
-      if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$ssh_host" exit 2>/dev/null; then
-        echo "Error: SSH connection to host '$ssh_host' failed"
+      if [ $? -ne 0 ]; then
+        echo "Error: SSH proxy test to host '$ssh_host' failed"
         return 1
       fi
+
+      sleep 1
+      kill "$(lsof -tiTCP:${port_temp} -sTCP:LISTEN)" 2>/dev/null
 
       # Add connection to config file
       update_config ".connections += [{
