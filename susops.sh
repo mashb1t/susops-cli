@@ -135,27 +135,44 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   ##############################################################################
   # build_args  <key> <flag> [conn_tag]
   #
-  # • key        – Key to read from the config file (e.g. "local" or "remote")
-  # • flag       – Flag to pass to ssh (e.g. "-L" or "-R")
-  # • conn_tag   – Connection tag (optional, defaults to the current connection)
+  # • key        – "local"  ⇒ -L style   (bind on client)
+  #                "remote" ⇒ -R style   (bind on server)
+  # • flag       – The SSH flag to emit  ("-L" or "-R")
+  # • conn_tag   – Connection tag (optional; defaults to $conn_tag)
   #
-  # Returns     – Arguments for ssh command
+  # Returns      – Array of arguments ready to splice into an ssh command
   ##############################################################################
   build_args() {
     local key=$1 flag=$2 conn_tag=${3:-$conn_tag}
-    args=()
-    while IFS=' ' read -r src dst; do
-      [[ -z $src || -z $dst ]] && continue
-      args+=("$flag" "${src}:localhost:${dst}")
+    local args=()
+
+    # jq prints either 4 fields (new schema) or 2 fields (old schema); we normalise to 4.
+    while IFS=' ' read -r src_addr src_port dst_addr dst_port; do
+      # Trailing fields may be empty (old schema) – convert on-the-fly.
+      if [[ -z $dst_addr || -z $dst_port ]]; then
+        # Legacy "src dst" line: assume loopback for both addresses
+        src_port=$src_addr
+        src_addr="localhost"
+        dst_port=$dst_addr
+        dst_addr="localhost"
+      fi
+      [[ -z $src_port || -z $dst_port ]] && continue  # still malformed? skip.
+
+      args+=("$flag" "${src_addr}:${src_port}:${dst_addr}:${dst_port}")
     done < <(
-      read_config "
+      read_config '
         .connections[]
-        | select(.tag == \"$conn_tag\")
-        | (.forwards.$key // [])[]
-        | select(.src and .dst)
-        | \"\(.src) \(.dst)\"
-      " $cfgfile
+        | select(.tag == "'"$conn_tag"'")
+        | (.forwards.'"$key"' // [])[]
+        | [
+              (.src_addr // "localhost"),
+              (.src_port // .src | tostring),
+              (.dst_addr // "localhost"),
+              (.dst_port // .dst | tostring)
+            ] | join(" ")
+      ' "$cfgfile"
     )
+
     echo "${args[@]}"
   }
 
@@ -294,13 +311,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     if [[ $target =~ ^[0-9]+$ ]]; then
       # Target looks like a port → could be local or remote
       if read_config ".connections[] | select(.tag==\"$conn_tag\").forwards.local[]?
-               | select(.src == $target)" | grep -q . >/dev/null; then
+               | select((.src // .src_port) == $target)" | grep -q . >/dev/null; then
         # Local forward exists: test localhost:src
         $verbose && echo "Testing local forward $target on localhost"
         if curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
           align_printf "✅ local:%s (localhost:%s → %s:%s)" "$label" \
                  "$target" "$target" "$ssh_host" \
-                 "$(read_config '.forwards.local[] | select(.src=='"$target"').dst' \
+                 "$(read_config '.forwards.local[] | select((.src // .src_port)=='"$target"') | (.dst // .dst_port)' \
                          <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
@@ -308,13 +325,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
           return 1
         fi
       elif read_config ".connections[] | select(.tag==\"$conn_tag\").forwards.remote[]?
-                 | select(.src == $target)" | grep -q . >/dev/null; then
+                 | select((.src // .src_port) == $target)" | grep -q . >/dev/null; then
         # Remote forward exists: test via ssh on remote side
         $verbose && echo "Testing remote forward $target on $ssh_host:$target"
         if ssh "$ssh_host" curl -s --max-time 5 "http://localhost:$target" >/dev/null 2>&1; then
           align_printf "✅ remote:%s (%s:%s → localhost:%s)" "$label" \
                  "$target" "$ssh_host" "$target" \
-                 "$(read_config '.forwards.remote[] | select(.src=='"$target"').dst' \
+                 "$(read_config '.forwards.remote[] | select((.src // .src_port)=='"$target"') | (.dst // .dst_port)' \
                          <<<"$(read_config '.connections[] | select(.tag=="'"$conn_tag"'")')")"
           return 0
         else
@@ -348,21 +365,21 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # Check if exact local/remote forward rule exists
   check_exact_rule() {
     # $1: src, $2: dst, $3: type (local|remote)
-    read_config ".connections[].forwards.$3[] | select(.src==\"$1\" and .dst==\"$2\")" | grep -q . && return 0
+    read_config ".connections[].forwards.$3[] | select((.src // .src_port)==\"$1\" and (.dst // .dst_port)==\"$2\")" | grep -q . && return 0
     return 1
   }
 
   # Check if a src port is configured for given type
   check_port_source() {
     # $1: port, $2: type (local|remote)
-    read_config ".connections[].forwards.$2[] | select(.src==\"$1\")" | grep -q . && return 0
+    read_config ".connections[].forwards.$2[] | select((.src // .src_port)==\"$1\")" | grep -q . && return 0
     return 1
   }
 
   # Check if a dst port is configured for given type
   check_port_target() {
     # $1: port, $2: type (local|remote)
-    read_config ".connections[].forwards.$2[] | select(.dst==\"$1\")" | grep -q . && return 0
+    read_config ".connections[].forwards.$2[] | select((.dst // .dst_port)==\"$1\")" | grep -q . && return 0
     return 1
   }
 
@@ -540,8 +557,10 @@ Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands:
   add-connection TAG SSH_HOST [SOCKS_PORT]                                        add a new connection
   rm-connection  TAG                                                              remove a connection
-  add [HOST] [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]]  add hostname or port forward, schema source → target
-  rm  [HOST] [-l LOCAL_PORT]                   [-r REMOTE_PORT]                   remove hostname or port forward
+  add [HOST]                                                                      add hostname or port forward, schema bind → host
+      [-l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]
+      [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]
+  rm  [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]                                     remove hostname or port forward
   start   [SSH_HOST] [SOCKS_PORT] [PAC_PORT]                                      start proxy and PAC server
   stop    [--keep-ports] [--force]                                                stop proxy and server (if no other proxies are running)
   restart                                                                         stop and start (preserves ports)
@@ -673,35 +692,40 @@ EOF
       ;;
 
     add)
-      # Usage: susops add [HOST] [-l LOCAL_PORT REMOTE_PORT [TAG]] [-r REMOTE_PORT LOCAL_PORT [TAG]]
-      #
-      # • HOST                            – Hostname to add to config and PAC file
-      # • -l LOCAL_PORT REMOTE_PORT [TAG] – Add a local forward
-      # • -r REMOTE_PORT LOCAL_PORT [TAG] – Add a remote forward
+      # Usage: susops add [HOST]                                                        – Add a hostname
+      #                   [-l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a local forward
+      #                   [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a remote forward
 
       local process_name
       process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
 
       case "$1" in
         -l)
-          local lport=$2 rport=$3 tag=${4:-""}
+          local lport=$2                       # LOCAL_PORT  (field-2 of -L)
+          local rport=$3                       # REMOTE_PORT (field-4 of -L)
+          local tag=${4:-""}                   # human label
+          local local_bind=${5:-"localhost"}   # field-1  of -L (bind addr on *your* host)
+          local remote_bind=${6:-"localhost"}  # field-3  of -L (target addr on SSH server)
+
+          # --------------------------------------------------------------------------- #
           [[ $lport && $rport ]] || {
-            echo "Usage: susops add -l LOCAL_PORT REMOTE_PORT [TAG]"
-            echo "Map a port from a remote server to your localhost"
+            echo "Usage: susops add -l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]"
+            echo "Map a port from \${LOCAL_BIND:-localhost} to a remote server address"
             return 1
           }
 
           [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
           tag=$(echo "$tag" | xargs)
 
+          # ── sanity checks ─────────────────────────────────────────────────────────── #
           if ! validate_port_in_range "$lport"; then
-            echo "LOCAL_PORT must be a valid port in range 1 to 65535"
+            echo "LOCAL_PORT must be between 1 and 65535"
             return 1
           elif ! validate_port_in_range "$rport"; then
-            echo "REMOTE_PORT must be a valid port in range 1 to 65535"
+            echo "REMOTE_PORT must be between 1 and 65535"
             return 1
           elif check_exact_rule "$lport" "$rport" "local"; then
-            echo "Local forward localhost:${lport} → $ssh_host:${rport} is already registered"
+            echo "Local forward ${local_bind}:${lport} → $ssh_host:${rport} already exists"
             return 1
           elif check_port_source "$lport" "local"; then
             echo "Local port ${lport} is already the source of a local forward"
@@ -713,35 +737,53 @@ EOF
             echo "Remote port ${rport} is already the source of a remote forward"
             return 1
           elif check_port_in_use "$lport"; then
-            echo "Local port $lport is already in use on localhost"
+            echo "Local port ${lport} is already in use"
             return 1
-          else
-            update_config ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.local += [{\"tag\": \"$tag\", \"src\": $lport, \"dst\": $rport}])"
-            align_printf "✅ Added local forward [${tag}] localhost:${lport} → ${ssh_host}:${rport}" "Connection [$conn_tag]:"
-            is_running "$process_name" && echo "Restart proxy to apply"
-            return 0
           fi
+
+          update_config ".connections[]
+            |= (select(.tag==\"$conn_tag\")
+                .forwards.local += [{
+                  \"tag\":      \"$tag\",
+                  \"src_addr\": \"$local_bind\",
+                  \"src_port\": $lport,
+                  \"dst_addr\": \"$remote_bind\",
+                  \"dst_port\": $rport
+                }])"
+
+          align_printf \
+            "✅ Added local forward [${tag}] ${local_bind}:${lport} → ${ssh_host}:${remote_bind}:${rport}" \
+            "Connection [$conn_tag]:"
+
+          is_running "$process_name" && echo "Restart proxy to apply"
+          return 0
           ;;
 
         -r)
-          local rport=$2 lport=$3 tag=${4:-""}
+          local rport=$2                      # REMOTE_PORT  (bind port on server)
+          local lport=$3                      # LOCAL_PORT   (target port on client)
+          local tag=${4:-""}                  # human label
+          local remote_bind=${5:-"localhost"} # field-1 of -R (bind addr on server)
+          local local_bind=${6:-"localhost"}  # field-3 of -R (target addr on client)
+
           [[ $rport && $lport ]] || {
-            echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT [TAG]"
-            echo "Map a port from your localhost to a remote server"
+            echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT [TAG] [REMOTE_BIND] [LOCAL_BIND]"
+            echo "Map a port from \${REMOTE_BIND:-localhost} on the server to \${LOCAL_BIND:-localhost} on your machine"
             return 1
           }
 
           [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$rport"
-          tag=$(echo "$tag" | xargs)
+          tag=$(echo "$tag" | xargs)  # trim
 
+          # ── sanity checks ─────────────────────────────────────────────────────────── #
           if ! validate_port_in_range "$rport"; then
-            echo "REMOTE_PORT must be a valid port in range 1 to 65535"
+            echo "REMOTE_PORT must be between 1 and 65535"
             return 1
           elif ! validate_port_in_range "$lport"; then
-            echo "LOCAL_PORT must be a valid port in range 1 to 65535"
+            echo "LOCAL_PORT must be between 1 and 65535"
             return 1
           elif check_exact_rule "$rport" "$lport" "remote"; then
-            echo "Remote forward $ssh_host:${rport} → localhost:${lport} is already registered"
+            echo "Remote forward ${ssh_host}:${rport} → ${local_bind}:${lport} already exists"
             return 1
           elif check_port_source "$rport" "remote"; then
             echo "Remote port ${rport} is already the source of a remote forward"
@@ -753,14 +795,26 @@ EOF
             echo "Local port ${lport} is already the source of a local forward"
             return 1
           elif check_port_in_use "$rport" "$ssh_host"; then
-            echo "Remote port $rport is already in use on $ssh_host"
+            echo "Remote port ${rport} is already in use on ${ssh_host} (${remote_bind})"
             return 1
-          else
-            update_config ".connections[] |= (select(.tag==\"$conn_tag\") .forwards.remote += [{\"tag\": \"$tag\", \"src\": $rport, \"dst\": $lport}])"
-            align_printf "✅ Added remote forward [${tag}] ${ssh_host}:${rport} → localhost:${lport}" "Connection [$conn_tag]:"
-            is_running "$process_name" && echo "Restart proxy to apply"
-            return 0
           fi
+
+          update_config ".connections[]
+            |= (select(.tag==\"$conn_tag\")
+                .forwards.remote += [{
+                  \"tag\":      \"$tag\",
+                  \"src_addr\": \"$remote_bind\",
+                  \"src_port\": $rport,
+                  \"dst_addr\": \"$local_bind\",
+                  \"dst_port\": $lport
+                }])"
+
+          align_printf \
+            "✅ Added remote forward [${tag}] ${ssh_host}:${remote_bind}:${rport} → ${local_bind}:${lport}" \
+            "Connection [$conn_tag]:"
+
+          is_running "$process_name" && echo "Restart proxy to apply"
+          return 0
           ;;
 
         *)
@@ -801,12 +855,12 @@ EOF
           local lport=$2
           [[ $lport ]] || { echo "Usage: susops rm -l LOCAL_PORT"; return 1; }
           if check_port_source "$lport" "local"; then
-            update_config "del(.connections[].forwards.local[] | select(.src==$lport))"
-            echo "Removed local forward localhost:$lport"
+            update_config "del(.connections[].forwards.local[] | select((.src // .src_port)==$lport))"
+            echo "Removed local forward $lport"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
           else
-            echo "No local forward for localhost:$lport"
+            echo "No local forward for $lport"
             return 1
           fi
           ;;
@@ -815,7 +869,7 @@ EOF
           local rport=$2
           [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
           if check_port_source "$rport" "remote"; then
-            update_config "del(.connections[].forwards.remote[] | select(.src==$rport))"
+            update_config "del(.connections[].forwards.remote[] | select((.src // .src_port)==$rport))"
             echo "Removed remote forward $ssh_host:$rport"
             is_running "$process_name" && echo "Restart proxy to apply"
             return 0
@@ -1001,7 +1055,8 @@ EOF
             test_entry "$port" "$tag" || failures=$((failures+1))
           done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
-              | (.forwards.local // [])[].src")
+              | (.forwards.local // [])[]
+              | (.src // .src_port)")
 
           # 3) All remote forwards (by src port on remote)
           first=true
@@ -1010,7 +1065,8 @@ EOF
             test_entry "$port" "$tag" || failures=$((failures+1))
           done < <(read_config ".connections[]
               | select(.tag==\"$tag\")
-              | (.forwards.remote // [])[].src")
+              | (.forwards.remote // [])[]
+              | (.src // .src_port)")
         else
           # Single target
           test_entry "$1" || failures=1
