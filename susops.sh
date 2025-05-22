@@ -74,7 +74,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # Get connection tags from the config file
   # If a specific connection is specified, return only that tag
   get_connection_tags() {
-    if $conn_specified; then
+    # $1: force all
+    local always_all=${1:-false}
+    if $conn_specified && [[ $always_all == false ]]; then
       # If a specific connection is specified, return only that tag
       read_config ".connections[] | select(.tag==\"$conn_tag\").tag"
     else
@@ -120,13 +122,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   write_pac_file() {
     {
       echo 'function FindProxyForURL(url, host) {'
-      for tag in $(read_config '.connections[].tag'); do
+      while IFS= read -r tag; do
         local socks_proxy_port
         socks_proxy_port=$(read_config ".connections[] | select(.tag==\"$tag\").socks_proxy_port")
         read_config ".connections[] | select(.tag==\"$tag\") | .pac_hosts[]" | while read -r host; do
           echo "  if (host == '$host' || dnsDomainIs(host, '.$host')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
         done
-      done
+      done < <(get_connection_tags true)
       echo '  return "DIRECT";'
       echo '}'
     } > "$pacfile"
