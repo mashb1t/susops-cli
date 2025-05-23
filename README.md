@@ -254,6 +254,9 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
     Check `/etc/ssh/sshd_config` for `AllowTcpForwarding yes` (default `yes`) and `GatewayPorts yes` or `GatewayPorts clientspecified` (default `no`).
     Further information: https://www.ssh.com/academy/ssh/tunneling-example#remote-forwarding
 
+- **Can't start proxy**
+  - If you have protected your private key with a passphrase, please create a separate key without passphrase, as SusOps can't handle interactive password input. 
+
 - **Port in use**
   - If you see “bind: Address already in use” in SSH logs, choose a different remote port or free up the existing one with `so rm -r <port>`.
 
