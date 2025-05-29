@@ -118,6 +118,102 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
   }
 
+  ##############################################################################
+  # prune_and_add_entry  <new_entry>
+  # For a wildcard or CIDR, delete narrower entries already covered.
+  ##############################################################################
+  prune_and_add_entry() {
+    local entry="$1"
+
+    # 1) Wildcard pruning (if any)
+    if [[ $entry == *"*"* ]]; then
+      # prune out any existing host with wildcard
+      # get matching pac_hosts comma se-separated
+      existing_hosts=$(read_config '.connections[].pac_hosts | map(select(. == "'"$entry"'")) | join(", ")' | tr -d '\n')
+      if [[ -n $existing_hosts ]]; then
+        update_config "del(.connections[].pac_hosts[] | select(.==\"$entry\"))"
+        echo "Removed more narrow domains $existing_hosts"
+      fi
+
+    # 2) CIDR pruning (if any)
+    elif [[ $entry =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+      local net=${entry%/*} bits=${entry#*/}
+      # remove narrower CIDRs under the same connection
+      read_config ".connections[] | select(.tag==\"$conn_tag\") .pac_hosts[]" \
+      | while IFS= read -r line; do
+        if [[ $line =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]] && [[ $line == */* ]]; then
+          local lnet=${line%/*} lbits=${line#*/}
+          if (( bits < lbits )) && [[ $net == "$lnet" ]]; then
+            update_config "del(.connections[].pac_hosts[] | select(.==\"$line\"))"
+            echo "Removed more narrow CIDR $line"
+          fi
+        fi
+      done
+    fi
+
+    # 3) Append the new entry
+    update_config ".connections[] |= (select(.tag==\"$conn_tag\") .pac_hosts += [\"$entry\"])"
+  }
+
+  ######################################################################
+  # pac_entry_overlaps  <candidate>
+  # Returns 0 (true) if candidate is already covered by an existing rule
+  ######################################################################
+  pac_entry_overlaps() {
+    local candidate="$1"
+    local line suffix
+
+    # 1) Check for exact duplicate
+    if read_config '.connections[].pac_hosts[]' | grep -Fxq "$candidate"; then
+      return 0
+    fi
+
+    # 2) Existing wildcard covers the new literal/CIDR?
+    #    (skip this check if the candidate itself is a wildcard)
+    if [[ $candidate != *"*"* ]]; then
+      while read -r line; do
+        [[ $line == *"*"* ]] || continue
+        suffix=${line#\*}
+        if [[ $candidate == *"$suffix" ]]; then
+          return 0
+        fi
+      done < <(read_config '.connections[].pac_hosts[]')
+    fi
+
+    # 3) CIDR containment: only reject if an EXISTING broader-or-equal CIDR covers the new one
+    if [[ $candidate == */* ]]; then
+      local net1 bits1 net2 bits2
+      net1=${candidate%/*}; bits1=${candidate#*/}
+      while read -r line; do
+        [[ $line =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]] || continue
+        net2=${line%/*}; bits2=${line#*/}
+        # if existing mask is <= candidate mask AND same prefix, existing covers candidate
+        if (( bits2 <= bits1 )) && [[ ${net1%%.*} == "${net2%%.*}" ]]; then
+          return 0
+        fi
+      done < <(read_config '.connections[].pac_hosts[]')
+    fi
+
+    # 4) Otherwise: no overlap
+    return 1
+  }
+
+  ##############################################################################
+  # cidr_to_netmask  <bits>
+  # Converts /8 /16 /24 (and any 0-32) into dotted-decimal netmask.
+  ##############################################################################
+  cidr_to_netmask() {
+    local bits=$1 mask="" i
+    for i in {0..3}; do
+      local n=$(( bits > 7 ? 8 : bits ))
+      mask+=$(( 256 - 2**(8-n) ))
+      bits=$(( bits-8 > 0 ? bits-8 : 0 ))
+      [[ $i -lt 3 ]] && mask+=.
+    done
+    echo "$mask"
+  }
+
+
   # (Re)generate unified PAC file with rules for all connections
   write_pac_file() {
     {
@@ -125,8 +221,21 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       while IFS= read -r tag; do
         local socks_proxy_port
         socks_proxy_port=$(read_config ".connections[] | select(.tag==\"$tag\").socks_proxy_port")
-        read_config ".connections[] | select(.tag==\"$tag\") | .pac_hosts[]" | while read -r host; do
-          echo "  if (host == '$host' || dnsDomainIs(host, '.$host')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
+
+        read_config ".connections[] | select(.tag==\"$tag\") | .pac_hosts[]" |
+        while read -r entry; do
+          if [[ $entry == *"*"* ]]; then
+            # wildcard – use shExpMatch
+            echo "  if (shExpMatch(host, '$entry')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
+          elif [[ $entry =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+            # CIDR – split net/mask
+            net=${entry%/*}; bits=${entry#*/}
+            mask=$(cidr_to_netmask "$bits")
+            echo "  if (isInNet(host, '$net', '$mask')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
+          else
+            # plain host or exact IP
+            echo "  if (host == '$entry' || dnsDomainIs(host, '.$entry')) return 'SOCKS5 127.0.0.1:$socks_proxy_port';"
+          fi
         done
       done < <(get_connection_tags true)
       echo '  return "DIRECT";'
@@ -345,8 +454,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         return 1
       fi
     else
-      # Host test through SOCKS proxy
-      if curl -s -k --max-time 5 \
+      if [[ $target == *"*"* ]] || [[ $target =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+        align_printf "⚠️%s skipped" "$label" "$target"
+      elif curl -s -k --max-time 5 \
              --proxy "socks5h://127.0.0.1:$socks_port" \
              "https://$target" >/dev/null 2>&1; then
         align_printf "✅ %s via SOCKS" "$label" "$target"
@@ -559,7 +669,7 @@ Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands:
   add-connection TAG SSH_HOST [SOCKS_PORT]                                        add a new connection
   rm-connection  TAG                                                              remove a connection
-  add [HOST]                                                                      add hostname or port forward, schema bind → host
+  add [HOST|WILDCARD|CIDR]                                                        add hostname or port forward, schema bind → host
       [-l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]
       [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]
   rm  [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]                                     remove hostname or port forward
@@ -820,27 +930,46 @@ EOF
           ;;
 
         *)
-          local host=$1
-          [[ $host ]] || {
-            echo "Usage: susops add [HOST]";
-            return 1;
-          }
+          local entry=$1
+          [[ $entry ]] || { echo "Usage: susops add [HOST|WILDCARD|CIDR]"; return 1; }
 
-          host=$(echo "$host" | sed -E 's/^[^:]+:\/\///; s/\/.*//')
+          # On URL, strip scheme + path, otherwise leave CIDRs intact
+          if [[ $entry == *"://"* ]]; then
+            # remove scheme:// and any trailing path
+            entry=${entry#*://}
+            entry=${entry%%/*}
+          fi
 
-          if read_config ".connections[].pac_hosts[] | select(.==\"$host\")" | grep -q .; then
-            echo "Error: PAC host '$host' already exists in a connection"
+          # Validate pattern
+          if ! [[ $entry == *"*"* \
+               || $entry =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ \
+               || $entry =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo "Error: unsupported host pattern '$entry'"
             return 1
           fi
 
-          update_config ".connections[] |= (select(.tag==\"$conn_tag\") .pac_hosts += [\"$host\"])"
-          write_pac_file
+          # Abort if truly duplicate; otherwise clean narrower ones
+          if pac_entry_overlaps "$entry"; then
+            echo "Error: PAC entry '$entry' already exists or is covered"
+            return 1
+          fi
 
-          align_printf "✅ Added $host" "Connection [$conn_tag]:"
-          is_running "$process_name" && (test_entry "$host" "$conn_tag" "Connectivity check:"; echo "Please reload your browser proxy settings.")
+          # prune and add (handles both wildcard & CIDR)
+          prune_and_add_entry "$entry"
+
+          write_pac_file
+          align_printf "✅ Added $entry" "Connection [$conn_tag]:"
+
+          # Connectivity test only for literal host / IP
+          if [[ $entry != *"*"* && $entry != */* ]]; then
+            is_running "$process_name" && test_entry "$entry" "$conn_tag" "Connectivity check:"
+          fi
+          echo "Please reload your browser proxy settings."
           return 0
       esac
       ;;
+
+
 
     rm)
       # Usage:
@@ -882,13 +1011,15 @@ EOF
           ;;
 
         *)
-          local host=$1
+          local host=$1 existing_hosts
           [[ $host ]] || { echo "Usage: rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]"; return 1; }
 
-          if read_config ".connections[].pac_hosts[] | select(.==\"$host\")" | grep -q .; then
+          existing_hosts=$(read_config '.connections[].pac_hosts | map(select(. == "'"$host"'")) | join(", ")' | tr -d '\n')
+
+          if [[ -n $existing_hosts ]]; then
             update_config "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
             write_pac_file
-            echo "Removed $host"
+            echo "Removed $existing_hosts"
             is_running "$process_name" && echo "Please reload your browser proxy settings."
             return 0
           else

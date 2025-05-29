@@ -187,10 +187,7 @@ if (host === "example.com" || dnsDomainIs(host, ".example.com"))
     return "SOCKS5 127.0.0.1:<socks_port>";
 ```
 
-This condition matches the exact domain (example.com) and one level of subdomains (e.g., sub.example.com).
-It does not include two or more levels of subdomains (e.g., sub.sub.example.com).
-If you want to include those, feel free to add another rule.
-
+This condition matches the exact domain (example.com) and all levels of subdomains (e.g., bar.foo.example.com).
 Only matching (sub)domains are tunneled through the SOCKS proxy. Others use direct connections.
 
 </details>
