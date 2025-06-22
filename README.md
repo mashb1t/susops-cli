@@ -256,7 +256,7 @@ Add the PAC config file URL directly as System Proxy for your network interface 
 <summary>Option 1: Use PAC file directly in Docker Desktop</summary>
 
 Prerequisites:
-- Docker hub account with assigned organization and active Business subscription (Team is not sufficient, see https://www.docker.com/pricing/ (Hardened Docker Desktop)
+- Docker hub account with assigned organization and active Business subscription. Team is not sufficient, see https://www.docker.com/pricing/ (Hardened Docker Desktop)
 
 Continue with the following commands:
 1. `sudo mkdir /Library/Application\ Support/com.docker.docker`
