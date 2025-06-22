@@ -240,7 +240,147 @@ When adding a new local or remote forward, `so` checks for port collisions to pr
 
 </details>
 
-### Troubleshooting
+## How To Use Susops As Docker Proxy
+
+<details>
+<summary>With admin permissions</summary>
+
+Add the PAC config file URL directly as System Proxy for your network interface for automatic proxy configuration. Docker Desktop will automatically use the system proxy.
+
+</details>
+
+<details>
+<summary>Without admin permissions</summary>
+
+<details>
+<summary>Option 1: Use PAC file directly in Docker Desktop</summary>
+
+Prerequisites:
+- Docker hub account with assigned organization (can be created for free)
+
+Continue with the following commands:
+1. `sudo mkdir /Library/Application\ Support/com.docker.docker`
+2. `sudo vim admin-settings.json`
+
+Add content (see https://docs.docker.com/security/for-admins/hardened-desktop/air-gapped-containers/#configuration):
+
+```
+{
+  "configurationFileVersion": 2,
+  "containersProxy": {
+    "mode": "manual",
+    "pac": "http://localhost:<your-pac-port>/proxy.pac"
+  }
+}
+```
+
+3. `sudo vim registry.json`
+
+Add content (see https://docs.docker.com/security/for-admins/enforce-sign-in/methods/#registryjson-method-all, org name from dropdown on the left of https://hub.docker.com/):
+
+```
+{
+  "allowedOrgs": ["<your-organizaion-name>"]
+}
+```
+
+4. Quit Docker Desktop
+5. Open Docker Desktop
+6. Login with your docker hub account (now enforced)
+7. Check by "docker exec -it <container-id> bash" (or sh), then calling curl https://<blocked-website>", add -k if necessary (ssl check disabled)
+
+Keep in mind that Docker Desktop has to be restarted if the pac file content changes (every time you add/remove/change rules or connections)
+
+</details>
+
+<details>
+<summary>Option 2: Use separate HTTP / HTTPS proxy in Docker Desktop</summary>
+
+1. Add docker-compose.yml file with this content:
+
+```
+services:
+  tinyproxy:
+    image: ajoergensen/tinyproxy:latest
+    container_name: tinyproxy
+    volumes:
+      - ./tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+networks:
+  tinyproxy:
+    external: true
+```
+
+Then choose one of the following options:
+<details>
+<summary>Option 1: Configure in Docker Desktop</summary>
+    
+1. Add port mount "8888:8888" to tinyproxy docker-compose container config
+2. Set HTTP and HTTPS Web Server in Docker Desktop > Settings > Resources > Proxies > Manual proxy configuration to http://localhost:8888
+3. Apply & restart
+
+</details>
+
+<details>
+<summary>Option 2: Use Container in docker compose</summary>
+
+1. Create the external network: docker network create tinyproxy
+2. Create file tinyproxy.conf with the following content:
+
+```
+Port 8888
+Listen 0.0.0.0
+
+upstream none "."
+
+upstream socks5 host.docker.internal:<socks5-proxy-port> "example.com"
+```
+
+SOCKS5 proxy port for the specific connection can be found in Susops > click "Status: running"
+
+Configure the target container:
+
+3. Add the network to the target container definition (see https://docs.docker.com/reference/compose-file/services/#networks):
+
+```
+services:
+  app:
+    networks:
+      - tinyproxy
+
+networks:
+  tinyproxy:
+    external: true
+```
+
+4. Add the following env vars to each container you’d like to use the proxied domains in:
+
+```
+- HTTP_PROXY=http://tinyproxy:8888
+- HTTPS_PROXY=http://tinyproxy:8888
+- NO_PROXY=localhost,127.0.0.1
+```
+
+> [!TIP]
+> If you only need the proxy in one specific docker-compose.yml file you may also use the default network by not specifying one, linking by container name is sufficient then. Optional: Make your app container dependent on tinyproxy with a config like this one to follow best practice:
+
+
+```
+services:
+  app:
+    depends_on:
+      tinyproxy:
+        condition: service_started
+```
+</details>
+
+</details>
+
+</details>
+
+## Troubleshooting
 
 - **Command `susops` / `so` not found**
   - You may have installed the cask first. Run ``brew link susops`` to link the commands manually.
