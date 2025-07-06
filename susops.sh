@@ -925,10 +925,22 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     running=true
     trap "running=false" SIGINT
 
+    # 3 Compress and encrypt the file once
+    local contentfile
+    contentfile="$(mktemp)"
+    gzip -c "$file" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" > "$contentfile"
+
+    $verbose && echo "Created content file: $contentfile"
+
     while $running; do
       echo "Waiting for client connection on port $port..."
-      # launch nc as a coprocess so we can read & write to the same socket
-      coproc NC_SHARE { nc -l $port; }
+      # launch nc as a coprocess to allow read & write to the same socket
+      coproc NC_SHARE { nc -l "$port"; }
+
+      if [[ $? -ne 0 ]]; then
+        echo "Error: Failed to start share on port $port"
+        break
+      fi
 
       # 1) read headers until blank line, capture Basic auth
       local auth header
@@ -957,9 +969,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
           printf 'Content-Disposition: attachment; filename="%s"\r\n' "$(basename "$file")"
           printf 'Connection: close\r\n'
           printf '\r\n'
-
-          gzip -c "$file" \
-          | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass"
+          cat "$contentfile"
         } >&"${NC_SHARE[1]}"
       else
         echo "Unauthorized access attempt $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
@@ -978,12 +988,13 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       wait "$NC_SHARE_PID"    # reap the nc process before looping again
     done
 
+    unlink "$contentfile" || echo "❌ Could not unlink encrypted file '$file.encrypted'"
+
     rm "-r" "$port" || return 1
     restart_susops
 
     echo "Exited."
   }
-
 
   ##############################################################################
   # susops fetch <port> <password> [outfile]
