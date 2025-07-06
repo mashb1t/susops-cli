@@ -954,6 +954,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         {
           printf 'HTTP/1.1 200 OK\r\n'
           printf 'Content-Type: application/octet-stream\r\n'
+          printf 'Content-Disposition: attachment; filename="%s"\r\n' "$(basename "$file")"
           printf 'Connection: close\r\n'
           printf '\r\n'
 
@@ -989,7 +990,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   #
   # • <port>                Port the sharer told you (the HTTP listener)
   # • <password>            Same password they chose
-  # • [outfile]             Where to write the file (defaults to basename)
+  # • [outfile]             If not set use response Content-Disposition filename
   ##############################################################################
   download_file() {
     local port=$1 user=$2 pass=$3 outfile=$4
@@ -997,28 +998,49 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       echo "Usage: susops fetch <port> <user> <password> [outfile]"
       return 1
     }
-    outfile=${outfile:-download.$(date +%s)}
 
     # ── ensure the SSH local-forward exists ──────────────────────────────────
 #    if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
 #      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
 #        || { echo "❌ could not add local forward"; return 1; }
+#      restart_susops
 #    fi
 
     # ── fetch, decrypt, decompress ────────────────────────────────────────────
     echo "🔽 Downloading via HTTP on localhost:$port …"
-    curl -s --fail \
+
+    local headerfile contentfile
+    headerfile="$(mktemp)"
+    contentfile="$(mktemp)"
+
+    if [[ $verbose ]]; then
+      echo "Using header file: $headerfile"
+      echo "Using content file: $contentfile"
+    fi
+
+    # curl dumps headers to $headerfile and streams body to stdout
+    curl -s --fail --dump-header "$headerfile" \
          --user "$user:$pass" \
          http://localhost:"$port" \
-    | {
-        # strip HTTP headers if any (in case -i was needed)
-        # sed -e '1,/^\r$/ d'
-        cat
-      } \
-    | openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
-    | gunzip -c > "$outfile" \
-    && echo "✅ Saved to $outfile" \
-    || { echo "❌ Download failed"; return 1; }
+      | {
+          # decrypt & decompress
+          openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
+          | gunzip -c
+        } > "$contentfile"
+
+    # ── parse filename from headers ------------------------------------------
+    # use outfile as filename, if not set use content disposition
+    if [[ -z "$outfile" ]]; then
+      outfile=$(grep -i '^Content-Disposition:' "$headerfile" \
+        | sed -n 's/.*filename="\([^"]*\)".*/\1/p')
+      if [[ -z "$outfile" ]]; then
+        outfile="download.$(date +%s)"
+      fi
+    fi
+
+    mv "$contentfile" "$outfile" \
+      && echo "✅ Saved to $outfile" \
+      || { echo "❌ Could not save to $outfile"; return 1; }
   }
 
   print_help() {
@@ -1043,6 +1065,8 @@ Commands:
   chrome                                                                          launch Chrome with proxy
   chrome-proxy-settings                                                           open Chrome proxy settings
   firefox                                                                         launch Firefox with proxy
+  share   <file> <user> <password> [port]                                         share a file via netcat
+  fetch   <port> <user> <password> [outfile]                                      download a file shared via susops share
   help, --help, -h                                                                show this help message
 Options:
   -v, --verbose                                                                   enable verbose output
