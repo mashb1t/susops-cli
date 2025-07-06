@@ -914,7 +914,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
     [[ $port ]] || { echo "❌ No free port found"; return 1; }
 
-    echo "🔐 Serving '$file' on http://127.0.0.1:$port  (Ctrl-C to stop)"
+    echo "🔐 Serving '$file' on http://127.0.0.1:$port (Ctrl+C to stop)"
 
     # 1 Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
 
@@ -951,7 +951,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         fi
       done
 
-      # exit if running is false
+      # break early to prevent "ambiguous redirect" file errors as NC_SHARE has been closed
       if ! $running; then
         echo "Exiting share server..."
         break
@@ -1000,7 +1000,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # susops fetch <port> <password> [outfile]
   #
   # • <port>                Port the sharer told you (the HTTP listener)
-  # • <password>            Same password they chose
+  # • <password>            Password to authenticate against the share server
   # • [outfile]             If not set use response Content-Disposition filename
   ##############################################################################
   download_file() {
@@ -1044,8 +1044,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     mv "$contentfile.decrypted" "$contentfile"
 
 
-    # ── parse filename from headers ------------------------------------------
-    # use outfile as filename, if not set use content disposition
+    # use outfile as filename, if not set use content disposition, if not set use date
     if [[ -z "$outfile" ]]; then
       outfile=$(grep -i '^Content-Disposition:' "$headerfile" \
         | sed -n 's/.*filename="\([^"]*\)".*/\1/p')
