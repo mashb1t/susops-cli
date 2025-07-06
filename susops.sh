@@ -1016,13 +1016,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     $verbose && echo "Using header file: $headerfile"
     $verbose && echo "Using content file: $contentfile"
 
-    # curl dumps headers to $headerfile and streams body to stdout
-    curl -s --fail --dump-header "$headerfile" \
-       --user ":$pass" \
-       http://localhost:"$port" \
-       -o "$contentfile"
-
-    if [[ $? -ne 0 ]]; then
+    if ! curl -s --fail --dump-header "$headerfile" \
+      --user ":$pass" \
+      http://localhost:"$port" \
+      -o "$contentfile"
+    then
       echo "❌ Download failed or unauthorized"
       unlink "$headerfile"
       unlink "$contentfile"
