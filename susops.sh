@@ -886,20 +886,25 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   ##############################################################################
-  # susops share  <file> <password> [port]
+  # susops share  <file> [password] [port]
   #
-  # • Starts a one-shot netcat server on 127.0.0.1:<port>.
-  # • Peers must send <password>\n as the very first line.
-  # • Upon a match the server replies “OK\n” **in clear text**, then
-  #   streams  gzip | openssl enc -aes-256-ctr -salt -pbkdf2  data.
-  # • If the password is wrong they receive “Unauthorized\n”.
+  # • <file>       File to share (must be readable)
+  # • [password]   Password to protect the share (optional, generated if not provided)
+  # • [port]       Port to serve the file on (optional, random if not provided)
   ##############################################################################
   share_file() {
     local file=$1 pass=$2 req_port=$3
-    [[ -r $file && -n $pass ]] || {
-      echo "Usage: susops share <file> <password> [port]"
+    [[ -r $file ]] || {
+      echo "Usage: susops share <file> [password] [port]"
+      echo "Ensure the file exists and is readable."
       return 1
     }
+
+    # if password is empty or password is set and req_port is empty
+    if [[ -z $pass ]]; then
+      pass=$(openssl rand -base64 24)
+      echo "No password provided, generated password: $pass"
+    fi
 
     # Pick an unoccupied high port if none supplied
     local port=$req_port
@@ -1001,7 +1006,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   ##############################################################################
   # susops fetch <port> <password> [outfile]
   #
-  # • <port>                Port the sharer told you (the HTTP listener)
+  # • <port>                Port the port the share server is running on
   # • <password>            Password to authenticate against the share server
   # • [outfile]             If not set use response Content-Disposition filename
   ##############################################################################
@@ -1080,7 +1085,7 @@ Commands:
   chrome                                                                          launch Chrome with proxy
   chrome-proxy-settings                                                           open Chrome proxy settings
   firefox                                                                         launch Firefox with proxy
-  share   <file> <password> [port]                                                securely share a file, serves encrypted content
+  share   <file> [password] [port]                                                securely share a file (automatically gzipped and encrypted)
   fetch   <port> <password> [outfile]                                             download a file shared via susops share
   help, --help, -h                                                                show this help message
 Options:
