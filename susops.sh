@@ -662,6 +662,365 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     return 0
   }
 
+  restart_susops() {
+    # Usage: susops restart
+    #
+    # Restart the SOCKS proxy and PAC server without changing the ports.
+    stop_susops --keep-ports --force
+    start_susops
+  }
+
+  add() {
+    local process_name
+    process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+
+    case "$1" in
+      -l)
+        local lport=$2                       # LOCAL_PORT  (field-2 of -L)
+        local rport=$3                       # REMOTE_PORT (field-4 of -L)
+        local tag=${4:-""}                   # human label
+        local local_bind=${5:-"localhost"}   # field-1  of -L (bind addr on *your* host)
+        local remote_bind=${6:-"localhost"}  # field-3  of -L (target addr on SSH server)
+
+        # --------------------------------------------------------------------------- #
+        [[ $lport && $rport ]] || {
+          echo "Usage: susops add -l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]"
+          echo "Map a port from \${LOCAL_BIND:-localhost} to a remote server address"
+          return 1
+        }
+
+        [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
+        tag=$(echo "$tag" | xargs)
+
+        # ── sanity checks ─────────────────────────────────────────────────────────── #
+        if ! validate_port_in_range "$lport"; then
+          echo "LOCAL_PORT must be between 1 and 65535"
+          return 1
+        elif ! validate_port_in_range "$rport"; then
+          echo "REMOTE_PORT must be between 1 and 65535"
+          return 1
+        elif check_exact_rule "$lport" "$rport" "local"; then
+          echo "Local forward ${local_bind}:${lport} → $ssh_host:${rport} already exists"
+          return 1
+        elif check_port_source "$lport" "local"; then
+          echo "Local port ${lport} is already the source of a local forward"
+          return 1
+        elif check_port_target "$lport" "local"; then
+          echo "Local port ${lport} is already the target of a remote forward"
+          return 1
+        elif check_port_source "$rport" "remote"; then
+          echo "Remote port ${rport} is already the source of a remote forward"
+          return 1
+        elif check_port_in_use "$lport"; then
+          echo "Local port ${lport} is already in use"
+          return 1
+        fi
+
+        update_config ".connections[]
+          |= (select(.tag==\"$conn_tag\")
+              .forwards.local += [{
+                \"tag\":      \"$tag\",
+                \"src_addr\": \"$local_bind\",
+                \"src_port\": $lport,
+                \"dst_addr\": \"$remote_bind\",
+                \"dst_port\": $rport
+              }])"
+
+        align_printf \
+          "✅ Added local forward [${tag}] ${local_bind}:${lport} → ${ssh_host}:${remote_bind}:${rport}" \
+          "Connection [$conn_tag]:"
+
+        is_running "$process_name" && echo "Restart proxy to apply"
+        return 0
+        ;;
+
+      -r)
+        local rport=$2                      # REMOTE_PORT  (bind port on server)
+        local lport=$3                      # LOCAL_PORT   (target port on client)
+        local tag=${4:-""}                  # human label
+        local remote_bind=${5:-"localhost"} # field-1 of -R (bind addr on server)
+        local local_bind=${6:-"localhost"}  # field-3 of -R (target addr on client)
+
+        [[ $rport && $lport ]] || {
+          echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT [TAG] [REMOTE_BIND] [LOCAL_BIND]"
+          echo "Map a port from \${REMOTE_BIND:-localhost} on the server to \${LOCAL_BIND:-localhost} on your machine"
+          return 1
+        }
+
+        [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$rport"
+        tag=$(echo "$tag" | xargs)  # trim
+
+        # ── sanity checks ─────────────────────────────────────────────────────────── #
+        if ! validate_port_in_range "$rport"; then
+          echo "REMOTE_PORT must be between 1 and 65535"
+          return 1
+        elif ! validate_port_in_range "$lport"; then
+          echo "LOCAL_PORT must be between 1 and 65535"
+          return 1
+        elif check_exact_rule "$rport" "$lport" "remote"; then
+          echo "Remote forward ${ssh_host}:${rport} → ${local_bind}:${lport} already exists"
+          return 1
+        elif check_port_source "$rport" "remote"; then
+          echo "Remote port ${rport} is already the source of a remote forward"
+          return 1
+        elif check_port_target "$rport" "remote"; then
+          echo "Remote port ${rport} is already the target of a local forward"
+          return 1
+        elif check_port_source "$lport" "local"; then
+          echo "Local port ${lport} is already the source of a local forward"
+          return 1
+        elif check_port_in_use "$rport" "$ssh_host"; then
+          echo "Remote port ${rport} is already in use on ${ssh_host} (${remote_bind})"
+          return 1
+        fi
+
+        update_config ".connections[]
+          |= (select(.tag==\"$conn_tag\")
+              .forwards.remote += [{
+                \"tag\":      \"$tag\",
+                \"src_addr\": \"$remote_bind\",
+                \"src_port\": $rport,
+                \"dst_addr\": \"$local_bind\",
+                \"dst_port\": $lport
+              }])"
+
+        align_printf \
+          "✅ Added remote forward [${tag}] ${ssh_host}:${remote_bind}:${rport} → ${local_bind}:${lport}" \
+          "Connection [$conn_tag]:"
+
+        is_running "$process_name" && echo "Restart proxy to apply"
+        return 0
+        ;;
+
+      *)
+        local entry=$1
+        [[ $entry ]] || { echo "Usage: susops add [HOST|WILDCARD|CIDR]"; return 1; }
+
+        # On URL, strip scheme + path, otherwise leave CIDRs intact
+        if [[ $entry == *"://"* ]]; then
+          # remove scheme:// and any trailing path
+          entry=${entry#*://}
+          entry=${entry%%/*}
+        fi
+
+        # Validate pattern
+        if ! [[ $entry == *"*"* \
+             || $entry =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ \
+             || $entry =~ ^[A-Za-z0-9.-]+$ ]]; then
+          echo "Error: unsupported host pattern '$entry'"
+          return 1
+        fi
+
+        # Abort if truly duplicate; otherwise clean narrower ones
+        if pac_entry_overlaps "$entry"; then
+          echo "Error: PAC entry '$entry' already exists or is covered"
+          return 1
+        fi
+
+        # prune and add (handles both wildcard & CIDR)
+        prune_and_add_entry "$entry"
+
+        write_pac_file
+        align_printf "✅ Added $entry" "Connection [$conn_tag]:"
+
+        # Connectivity test only for literal host / IP
+        if [[ $entry != *"*"* && $entry != */* ]]; then
+          is_running "$process_name" && test_entry "$entry" "$conn_tag" "Connectivity check:"
+        fi
+        echo "Please reload your browser proxy settings."
+        return 0
+    esac
+  }
+
+  rm() {
+    local process_name
+    process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+    case "$1" in
+      -l)
+        local lport=$2
+        [[ $lport ]] || { echo "Usage: susops rm -l LOCAL_PORT"; return 1; }
+        if check_port_source "$lport" "local"; then
+          update_config "del(.connections[].forwards.local[] | select((.src // .src_port)==$lport))"
+          echo "Removed local forward $lport"
+          is_running "$process_name" && echo "Restart proxy to apply"
+          return 0
+        else
+          echo "No local forward for $lport"
+          return 1
+        fi
+        ;;
+
+      -r)
+        local rport=$2
+        [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
+        if check_port_source "$rport" "remote"; then
+          update_config "del(.connections[].forwards.remote[] | select((.src // .src_port)==$rport))"
+          echo "Removed remote forward $ssh_host:$rport"
+          is_running "$process_name" && echo "Restart proxy to apply"
+          return 0
+        else
+          echo "No remote forward for $ssh_host:$rport"
+          return 1
+        fi
+        ;;
+
+      *)
+        local host=$1 existing_hosts
+        [[ $host ]] || { echo "Usage: rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]"; return 1; }
+
+        existing_hosts=$(read_config '.connections[].pac_hosts | map(select(. == "'"$host"'")) | join(", ")' | tr -d '\n')
+
+        if [[ -n $existing_hosts ]]; then
+          update_config "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
+          write_pac_file
+          echo "Removed $existing_hosts"
+          is_running "$process_name" && echo "Please reload your browser proxy settings."
+          return 0
+        else
+          echo "$host not found"
+          if [[ $host =~ ^[0-9]+$ ]]; then echo "Use \"susops -l LOCAL_PORT\" OR \"susops -r REMOTE_PORT\" to remove a forwarded port"; fi
+          return 1
+        fi
+        ;;
+    esac
+  }
+
+  ##############################################################################
+  # susops share  <file> <user> <password> [port]
+  #
+  # • Starts a one-shot netcat server on 127.0.0.1:<port>.
+  # • Peers must send <password>\n as the very first line.
+  # • Upon a match the server replies “OK\n” **in clear text**, then
+  #   streams  gzip | openssl enc -aes-256-ctr -salt -pbkdf2  data.
+  # • If the password is wrong they receive “Unauthorized\n”.
+  ##############################################################################
+  share_file() {
+    local file=$1 user=$2 pass=$3 req_port=$4
+    [[ -r $file && -n $user && -n $pass ]] || {
+      echo "Usage: susops share <file> <user> <password> [port]"
+      return 1
+    }
+
+    # Pick an unoccupied high port if none supplied
+    local port=$req_port
+    if [[ -z $port ]]; then
+      port=$(get_random_free_port)
+    elif ! validate_port_in_range "$port"; then
+      echo "Error: port must be a valid port in range 1 to 65535"
+      return 1
+    elif check_port_in_use "$port"; then
+      echo "Error: port $port is already in use"
+      return 1
+    fi
+    [[ $port ]] || { echo "❌ No free port found"; return 1; }
+
+    echo "🔐 Serving '$file' on http://127.0.0.1:$port  (Ctrl-C to stop)"
+
+    # 1 Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
+
+    add "-r" "$port" "$port" "share-$port" "localhost" "localhost" || return 1
+    restart_susops
+
+    # 2 Loop, handling one client at a time
+    running=true
+    trap "running=false" SIGINT
+
+    while $running; do
+      echo "Waiting for client connection on port $port..."
+      # launch nc as a coprocess so we can read & write to the same socket
+      coproc NC_SHARE { nc -l $port; }
+
+      # 1) read headers until blank line, capture Basic auth
+      local auth header
+      while IFS=$'\r\n' read -r header <&"${NC_SHARE[0]}"; do
+        [[ -z $header ]] && break
+        if [[ $header =~ ^Authorization:\ Basic\ (.+)$ ]]; then
+          auth=${BASH_REMATCH[1]}
+        fi
+      done
+
+      # exit if running is false
+      if ! $running; then
+        echo "Exiting share server..."
+        break
+      fi
+
+      # 2) validate creds
+      local decoded
+      decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
+      if [[ "$user:$pass" == "$decoded" ]]; then
+        echo "Authorized access from $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
+        # 200 OK + headers
+        {
+          printf 'HTTP/1.1 200 OK\r\n'
+          printf 'Content-Type: application/octet-stream\r\n'
+          printf 'Connection: close\r\n'
+          printf '\r\n'
+
+          gzip -c "$file" \
+          | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass"
+        } >&"${NC_SHARE[1]}"
+      else
+        echo "Unauthorized access attempt $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
+        # 401 challenge
+        {
+          printf 'HTTP/1.1 401 Unauthorized\r\n'
+          printf 'WWW-Authenticate: Basic realm="susops share"\r\n'
+          printf 'Content-Length: 0\r\n'
+          printf '\r\n'
+        } >&"${NC_SHARE[1]}"
+      fi
+
+      # clean up this coprocess
+      exec {NC_SHARE[0]}>&-   # close read end
+      exec {NC_SHARE[1]}>&-   # close write end
+      wait "$NC_SHARE_PID"    # reap the nc process before looping again
+    done
+
+    rm "-r" "$port" || return 1
+    restart_susops
+
+    echo "Exited."
+  }
+
+
+  ##############################################################################
+  # susops fetch <port> <username> <password> [outfile]
+  #
+  # • <port>                Port the sharer told you (the HTTP listener)
+  # • <password>            Same password they chose
+  # • [outfile]             Where to write the file (defaults to basename)
+  ##############################################################################
+  download_file() {
+    local port=$1 user=$2 pass=$3 outfile=$4
+    [[ $port && $user && $pass ]] || {
+      echo "Usage: susops fetch <port> <user> <password> [outfile]"
+      return 1
+    }
+    outfile=${outfile:-download.$(date +%s)}
+
+    # ── ensure the SSH local-forward exists ──────────────────────────────────
+#    if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
+#      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
+#        || { echo "❌ could not add local forward"; return 1; }
+#    fi
+
+    # ── fetch, decrypt, decompress ────────────────────────────────────────────
+    echo "🔽 Downloading via HTTP on localhost:$port …"
+    curl -s --fail \
+         --user "$user:$pass" \
+         http://localhost:"$port" \
+    | {
+        # strip HTTP headers if any (in case -i was needed)
+        # sed -e '1,/^\r$/ d'
+        cat
+      } \
+    | openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
+    | gunzip -c > "$outfile" \
+    && echo "✅ Saved to $outfile" \
+    || { echo "❌ Download failed"; return 1; }
+  }
+
   print_help() {
   # Print help message
   cat << EOF
@@ -808,165 +1167,7 @@ EOF
       #                   [-l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a local forward
       #                   [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a remote forward
 
-      local process_name
-      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
-
-      case "$1" in
-        -l)
-          local lport=$2                       # LOCAL_PORT  (field-2 of -L)
-          local rport=$3                       # REMOTE_PORT (field-4 of -L)
-          local tag=${4:-""}                   # human label
-          local local_bind=${5:-"localhost"}   # field-1  of -L (bind addr on *your* host)
-          local remote_bind=${6:-"localhost"}  # field-3  of -L (target addr on SSH server)
-
-          # --------------------------------------------------------------------------- #
-          [[ $lport && $rport ]] || {
-            echo "Usage: susops add -l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]"
-            echo "Map a port from \${LOCAL_BIND:-localhost} to a remote server address"
-            return 1
-          }
-
-          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$lport"
-          tag=$(echo "$tag" | xargs)
-
-          # ── sanity checks ─────────────────────────────────────────────────────────── #
-          if ! validate_port_in_range "$lport"; then
-            echo "LOCAL_PORT must be between 1 and 65535"
-            return 1
-          elif ! validate_port_in_range "$rport"; then
-            echo "REMOTE_PORT must be between 1 and 65535"
-            return 1
-          elif check_exact_rule "$lport" "$rport" "local"; then
-            echo "Local forward ${local_bind}:${lport} → $ssh_host:${rport} already exists"
-            return 1
-          elif check_port_source "$lport" "local"; then
-            echo "Local port ${lport} is already the source of a local forward"
-            return 1
-          elif check_port_target "$lport" "local"; then
-            echo "Local port ${lport} is already the target of a remote forward"
-            return 1
-          elif check_port_source "$rport" "remote"; then
-            echo "Remote port ${rport} is already the source of a remote forward"
-            return 1
-          elif check_port_in_use "$lport"; then
-            echo "Local port ${lport} is already in use"
-            return 1
-          fi
-
-          update_config ".connections[]
-            |= (select(.tag==\"$conn_tag\")
-                .forwards.local += [{
-                  \"tag\":      \"$tag\",
-                  \"src_addr\": \"$local_bind\",
-                  \"src_port\": $lport,
-                  \"dst_addr\": \"$remote_bind\",
-                  \"dst_port\": $rport
-                }])"
-
-          align_printf \
-            "✅ Added local forward [${tag}] ${local_bind}:${lport} → ${ssh_host}:${remote_bind}:${rport}" \
-            "Connection [$conn_tag]:"
-
-          is_running "$process_name" && echo "Restart proxy to apply"
-          return 0
-          ;;
-
-        -r)
-          local rport=$2                      # REMOTE_PORT  (bind port on server)
-          local lport=$3                      # LOCAL_PORT   (target port on client)
-          local tag=${4:-""}                  # human label
-          local remote_bind=${5:-"localhost"} # field-1 of -R (bind addr on server)
-          local local_bind=${6:-"localhost"}  # field-3 of -R (target addr on client)
-
-          [[ $rport && $lport ]] || {
-            echo "Usage: susops add -r REMOTE_PORT LOCAL_PORT [TAG] [REMOTE_BIND] [LOCAL_BIND]"
-            echo "Map a port from \${REMOTE_BIND:-localhost} on the server to \${LOCAL_BIND:-localhost} on your machine"
-            return 1
-          }
-
-          [[ -z $tag || $tag =~ ^[[:space:]]+$ ]] && tag="$rport"
-          tag=$(echo "$tag" | xargs)  # trim
-
-          # ── sanity checks ─────────────────────────────────────────────────────────── #
-          if ! validate_port_in_range "$rport"; then
-            echo "REMOTE_PORT must be between 1 and 65535"
-            return 1
-          elif ! validate_port_in_range "$lport"; then
-            echo "LOCAL_PORT must be between 1 and 65535"
-            return 1
-          elif check_exact_rule "$rport" "$lport" "remote"; then
-            echo "Remote forward ${ssh_host}:${rport} → ${local_bind}:${lport} already exists"
-            return 1
-          elif check_port_source "$rport" "remote"; then
-            echo "Remote port ${rport} is already the source of a remote forward"
-            return 1
-          elif check_port_target "$rport" "remote"; then
-            echo "Remote port ${rport} is already the target of a local forward"
-            return 1
-          elif check_port_source "$lport" "local"; then
-            echo "Local port ${lport} is already the source of a local forward"
-            return 1
-          elif check_port_in_use "$rport" "$ssh_host"; then
-            echo "Remote port ${rport} is already in use on ${ssh_host} (${remote_bind})"
-            return 1
-          fi
-
-          update_config ".connections[]
-            |= (select(.tag==\"$conn_tag\")
-                .forwards.remote += [{
-                  \"tag\":      \"$tag\",
-                  \"src_addr\": \"$remote_bind\",
-                  \"src_port\": $rport,
-                  \"dst_addr\": \"$local_bind\",
-                  \"dst_port\": $lport
-                }])"
-
-          align_printf \
-            "✅ Added remote forward [${tag}] ${ssh_host}:${remote_bind}:${rport} → ${local_bind}:${lport}" \
-            "Connection [$conn_tag]:"
-
-          is_running "$process_name" && echo "Restart proxy to apply"
-          return 0
-          ;;
-
-        *)
-          local entry=$1
-          [[ $entry ]] || { echo "Usage: susops add [HOST|WILDCARD|CIDR]"; return 1; }
-
-          # On URL, strip scheme + path, otherwise leave CIDRs intact
-          if [[ $entry == *"://"* ]]; then
-            # remove scheme:// and any trailing path
-            entry=${entry#*://}
-            entry=${entry%%/*}
-          fi
-
-          # Validate pattern
-          if ! [[ $entry == *"*"* \
-               || $entry =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ \
-               || $entry =~ ^[A-Za-z0-9.-]+$ ]]; then
-            echo "Error: unsupported host pattern '$entry'"
-            return 1
-          fi
-
-          # Abort if truly duplicate; otherwise clean narrower ones
-          if pac_entry_overlaps "$entry"; then
-            echo "Error: PAC entry '$entry' already exists or is covered"
-            return 1
-          fi
-
-          # prune and add (handles both wildcard & CIDR)
-          prune_and_add_entry "$entry"
-
-          write_pac_file
-          align_printf "✅ Added $entry" "Connection [$conn_tag]:"
-
-          # Connectivity test only for literal host / IP
-          if [[ $entry != *"*"* && $entry != */* ]]; then
-            is_running "$process_name" && test_entry "$entry" "$conn_tag" "Connectivity check:"
-          fi
-          echo "Please reload your browser proxy settings."
-          return 0
-      esac
+      add "$@"
       ;;
 
 
@@ -979,64 +1180,12 @@ EOF
       # • LOCAL_PORT  – Port to remove from local forward
       # • REMOTE_PORT – Port to remove from remote forward
       #
-      local process_name
-      process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
-      case "$1" in
-        -l)
-          local lport=$2
-          [[ $lport ]] || { echo "Usage: susops rm -l LOCAL_PORT"; return 1; }
-          if check_port_source "$lport" "local"; then
-            update_config "del(.connections[].forwards.local[] | select((.src // .src_port)==$lport))"
-            echo "Removed local forward $lport"
-            is_running "$process_name" && echo "Restart proxy to apply"
-            return 0
-          else
-            echo "No local forward for $lport"
-            return 1
-          fi
-          ;;
 
-        -r)
-          local rport=$2
-          [[ $rport ]] || { echo "Usage: susops rm -r REMOTE_PORT"; return 1; }
-          if check_port_source "$rport" "remote"; then
-            update_config "del(.connections[].forwards.remote[] | select((.src // .src_port)==$rport))"
-            echo "Removed remote forward $ssh_host:$rport"
-            is_running "$process_name" && echo "Restart proxy to apply"
-            return 0
-          else
-            echo "No remote forward for $ssh_host:$rport"
-            return 1
-          fi
-          ;;
-
-        *)
-          local host=$1 existing_hosts
-          [[ $host ]] || { echo "Usage: rm [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]"; return 1; }
-
-          existing_hosts=$(read_config '.connections[].pac_hosts | map(select(. == "'"$host"'")) | join(", ")' | tr -d '\n')
-
-          if [[ -n $existing_hosts ]]; then
-            update_config "del(.connections[].pac_hosts[] | select(.==\"$host\"))"
-            write_pac_file
-            echo "Removed $existing_hosts"
-            is_running "$process_name" && echo "Please reload your browser proxy settings."
-            return 0
-          else
-            echo "$host not found"
-            if [[ $host =~ ^[0-9]+$ ]]; then echo "Use \"susops -l LOCAL_PORT\" OR \"susops -r REMOTE_PORT\" to remove a forwarded port"; fi
-            return 1
-          fi
-          ;;
-      esac
+      rm "$@"
       ;;
 
     restart)
-      # Usage: susops restart
-      #
-      # Restart the SOCKS proxy and PAC server without changing the ports.
-      stop_susops --keep-ports --force
-      start_susops
+      restart_susops
       ;;
 
     start)
@@ -1228,6 +1377,28 @@ EOF
       mkdir -p "$PROFILE"
       printf 'user_pref("network.proxy.type", 2);\nuser_pref("network.proxy.autoconfig_url", "http://localhost:%s/susops.pac");' "$pac_port" > "$PROFILE/user.js"
       open -a "Firefox" --args -profile "$PROFILE" -no-remote
+      ;;
+
+    share)
+      # Usage: susops share <file> <user> <password> [port]
+      #
+      # • <file>     – File to share
+      # • <user> – User for the file
+      # • <password> – Password for the file
+      # • [port]     – Port to listen on (default: random free port)
+
+      share_file "$@"
+      ;;
+
+    fetch)
+      # Usage: susops fetch <port> <user> <password> [outfile]
+      #
+      # • <port>     – Port the sharer told you (the HTTP listener)
+      # • <user>     – User for the file
+      # • <password> – Password for the file
+      # • [outfile]  – Where to write the file (default: download.<timestamp>)
+
+      download_file "$@"
       ;;
 
     *)
