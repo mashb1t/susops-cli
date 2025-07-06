@@ -886,7 +886,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   ##############################################################################
-  # susops share  <file> <user> <password> [port]
+  # susops share  <file> <password> [port]
   #
   # • Starts a one-shot netcat server on 127.0.0.1:<port>.
   # • Peers must send <password>\n as the very first line.
@@ -895,9 +895,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   # • If the password is wrong they receive “Unauthorized\n”.
   ##############################################################################
   share_file() {
-    local file=$1 user=$2 pass=$3 req_port=$4
-    [[ -r $file && -n $user && -n $pass ]] || {
-      echo "Usage: susops share <file> <user> <password> [port]"
+    local file=$1 pass=$2 req_port=$3
+    [[ -r $file && -n $pass ]] || {
+      echo "Usage: susops share <file> <password> [port]"
       return 1
     }
 
@@ -948,7 +948,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       # 2) validate creds
       local decoded
       decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
-      if [[ "$user:$pass" == "$decoded" ]]; then
+      if [[ ":$pass" == "$decoded" ]]; then
         echo "Authorized access from $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
         # 200 OK + headers
         {
@@ -986,16 +986,16 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
 
   ##############################################################################
-  # susops fetch <port> <username> <password> [outfile]
+  # susops fetch <port> <password> [outfile]
   #
   # • <port>                Port the sharer told you (the HTTP listener)
   # • <password>            Same password they chose
   # • [outfile]             If not set use response Content-Disposition filename
   ##############################################################################
   download_file() {
-    local port=$1 user=$2 pass=$3 outfile=$4
-    [[ $port && $user && $pass ]] || {
-      echo "Usage: susops fetch <port> <user> <password> [outfile]"
+    local port=$1 pass=$2 outfile=$3
+    [[ $port && $pass ]] || {
+      echo "Usage: susops fetch <port> <password> [outfile]"
       return 1
     }
 
@@ -1013,20 +1013,27 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     headerfile="$(mktemp)"
     contentfile="$(mktemp)"
 
-    if [[ $verbose ]]; then
-      echo "Using header file: $headerfile"
-      echo "Using content file: $contentfile"
-    fi
+    $verbose && echo "Using header file: $headerfile"
+    $verbose && echo "Using content file: $contentfile"
 
     # curl dumps headers to $headerfile and streams body to stdout
     curl -s --fail --dump-header "$headerfile" \
-         --user "$user:$pass" \
-         http://localhost:"$port" \
-      | {
-          # decrypt & decompress
-          openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
-          | gunzip -c
-        } > "$contentfile"
+       --user ":$pass" \
+       http://localhost:"$port" \
+       -o "$contentfile"
+
+    if [[ $? -ne 0 ]]; then
+      echo "❌ Download failed or unauthorized"
+      unlink "$headerfile"
+      unlink "$contentfile"
+      return 1
+    fi
+
+    openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
+      -in "$contentfile" | gunzip -c > "$contentfile.decrypted"
+
+    mv "$contentfile.decrypted" "$contentfile"
+
 
     # ── parse filename from headers ------------------------------------------
     # use outfile as filename, if not set use content disposition
@@ -1044,8 +1051,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   print_help() {
-  # Print help message
-  cat << EOF
+    cat << EOF
 Usage: susops [-v|--verbose] [-c|--connection TAG] COMMAND [ARGS]
 Commands:
   add-connection TAG SSH_HOST [SOCKS_PORT]                                        add a new connection
@@ -1065,8 +1071,8 @@ Commands:
   chrome                                                                          launch Chrome with proxy
   chrome-proxy-settings                                                           open Chrome proxy settings
   firefox                                                                         launch Firefox with proxy
-  share   <file> <user> <password> [port]                                         share a file via netcat
-  fetch   <port> <user> <password> [outfile]                                      download a file shared via susops share
+  share   <file> <password> [port]                                                securely share a file, serves encrypted content
+  fetch   <port> <password> [outfile]                                             download a file shared via susops share
   help, --help, -h                                                                show this help message
 Options:
   -v, --verbose                                                                   enable verbose output
@@ -1407,7 +1413,6 @@ EOF
       # Usage: susops share <file> <user> <password> [port]
       #
       # • <file>     – File to share
-      # • <user> – User for the file
       # • <password> – Password for the file
       # • [port]     – Port to listen on (default: random free port)
 
