@@ -929,6 +929,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local contentfile
     contentfile="$(mktemp)"
     gzip -c "$file" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" > "$contentfile"
+    length=$(wc -c <"$contentfile")
 
     $verbose && echo "Created content file: $contentfile"
 
@@ -966,6 +967,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         {
           printf 'HTTP/1.1 200 OK\r\n'
           printf 'Content-Type: application/octet-stream\r\n'
+          printf 'Content-Length: %s\r\n' "$length"
           printf 'Content-Disposition: attachment; filename="%s"\r\n' "$(basename "$file")"
           printf 'Connection: close\r\n'
           printf '\r\n'
@@ -1010,14 +1012,14 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       return 1
     }
 
-    # ── ensure the SSH local-forward exists ──────────────────────────────────
+    # ensure the SSH local-forward exists
 #    if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
 #      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
 #        || { echo "❌ could not add local forward"; return 1; }
 #      restart_susops
 #    fi
 
-    # ── fetch, decrypt, decompress ────────────────────────────────────────────
+    # fetch, decrypt, decompress
     echo "🔽 Downloading via HTTP on localhost:$port …"
 
     local headerfile contentfile
@@ -1042,7 +1044,6 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       -in "$contentfile" | gunzip -c > "$contentfile.decrypted"
 
     mv "$contentfile.decrypted" "$contentfile"
-
 
     # use outfile as filename, if not set use content disposition, if not set use date
     if [[ -z "$outfile" ]]; then
