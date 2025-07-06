@@ -1448,22 +1448,21 @@ EOF
       ;;
 
     share)
-      # Usage: susops share <file> <user> <password> [port]
+      # Usage: susops share <file> [password] [port]
       #
-      # • <file>     – File to share
-      # • <password> – Password for the file
-      # • [port]     – Port to listen on (default: random free port)
+      # • <file>       File to share (must be readable)
+      # • [password]   Password to protect the share (optional, generated if not provided)
+      # • [port]       Port to serve the file on (optional, random if not provided)
 
       share_file "$@"
       ;;
 
     fetch)
-      # Usage: susops fetch <port> <user> <password> [outfile]
+      # Usage: susops fetch <port> <password> [outfile]
       #
-      # • <port>     – Port the sharer told you (the HTTP listener)
-      # • <user>     – User for the file
-      # • <password> – Password for the file
-      # • [outfile]  – Where to write the file (default: download.<timestamp>)
+      # • <port>      Port the port the share server is running on
+      # • <password>  Password to authenticate against the share server
+      # • [outfile]   Where to write the file (default: filename from Content-Disposition header)
 
       download_file "$@"
       ;;
@@ -1477,3 +1476,4 @@ EOF
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   susops "$@"
 fi
+

@@ -174,6 +174,56 @@ so rm -r 8000
 so restart
 ```
 
+## File Sharing
+
+SusOps includes secure file transfer commands to share and fetch files between your local machine and the remote SSH host using the established SOCKS5 connection and port forwarding:
+
+### What it does
+
+- **share**: Creates a temporary remote forward to serve a local file on the SSH host
+- **fetch**: Uses a local forward to download a file from the SSH host
+
+### How to share a file
+
+```bash
+# Share a local file (creates temporary remote forward)
+so share /path/to/local/file.txt
+
+# Share with custom password
+so share /path/to/local/file.txt mypassword
+
+# Share with custom password and port
+so share /path/to/local/file.txt mypassword 8080
+```
+
+When sharing, SusOps:
+1. Creates a temporary remote forward through the SOCKS5 tunnel
+2. Compresses and encrypts the file using AES-256-CTR
+3. Serves the file on the remote host at `http://localhost:<port>` with HTTP Basic authentication
+4. The file becomes accessible from the SSH host using the provided password
+
+> [!NOTE]
+> File sharing only supports single files, not directories. The file is automatically compressed and encrypted before transfer.
+
+### How to fetch a file
+
+```bash
+# Fetch a file from a share server on the SSH host
+so fetch 8080 mypassword
+
+# Fetch to a specific local destination
+so fetch 8080 mypassword downloaded_file.txt
+```
+
+When fetching, SusOps:
+1. Connects to the share server on the SSH host via local forwarding
+2. Downloads the encrypted and compressed file using HTTP Basic authentication
+3. Automatically decrypts and decompresses the file locally
+4. Saves with the original filename or specified output name
+
+> [!TIP]
+> Both share and fetch operations use the active SOCKS5 connection and SSH tunneling for security. Files are automatically compressed with gzip and encrypted with AES-256-CTR during transfer.
+
 ## Under the hood
 
 <details>
