@@ -885,6 +885,26 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     esac
   }
 
+  encrypt_value_base64() {
+    local string=$1 pass=$2
+    echo "$string" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" -base64 -A
+  }
+
+  decrypt_value_base64() {
+    local encrypted_string=$1 pass=$2
+    echo "$encrypted_string" | openssl enc -d -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" -base64 -A
+  }
+
+  compress_and_encrypt_file() {
+    local file=$1 pass=$2
+    gzip -c "$file" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass"
+  }
+
+  decrypt_and_decompress_file() {
+    local encrypted_file=$1 pass=$2
+    openssl enc -d -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" < "$encrypted_file" | gunzip
+  }
+
   ##############################################################################
   # susops share  <file> [password] [port]
   #
@@ -931,15 +951,17 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     trap "running=false" SIGINT
 
     # 3 Compress and encrypt the file once
-    local contentfile
+    local contentfile basename
     contentfile="$(mktemp)"
-    gzip -c "$file" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" > "$contentfile"
-    length=$(wc -c <"$contentfile")
+    compress_and_encrypt_file "$file" "$pass" > "$contentfile"
+    $verbose && echo "Created encrypted content file: $contentfile"
 
-    $verbose && echo "Created content file: $contentfile"
+    length=$(wc -c <"$contentfile")
+    basename=$(basename "$file")
+    encrypted_filename=$(encrypt_value_base64 "$basename" "$pass")
+    $verbose && echo "Encrypted filename: $encrypted_filename"
 
     while $running; do
-      echo "Waiting for client connection on port $port..."
       # launch nc as a coprocess to allow read & write to the same socket
       coproc NC_SHARE { nc -l "$port"; }
 
@@ -967,19 +989,19 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       local decoded
       decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
       if [[ ":$pass" == "$decoded" ]]; then
-        echo "Authorized access from $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
+        echo "Authorized access"
         # 200 OK + headers
         {
           printf 'HTTP/1.1 200 OK\r\n'
           printf 'Content-Type: application/octet-stream\r\n'
           printf 'Content-Length: %s\r\n' "$length"
-          printf 'Content-Disposition: attachment; filename="%s"\r\n' "$(basename "$file")"
+          printf 'Content-Disposition: attachment; filename="%s"\r\n' "$encrypted_filename"
           printf 'Connection: close\r\n'
           printf '\r\n'
           cat "$contentfile"
         } >&"${NC_SHARE[1]}"
       else
-        echo "Unauthorized access attempt $(printf '%s' "$auth" | base64 -d 2>/dev/null)"
+        echo "Unauthorized access"
         # 401 challenge
         {
           printf 'HTTP/1.1 401 Unauthorized\r\n'
@@ -1045,8 +1067,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       return 1
     fi
 
-    openssl enc -d -aes-256-ctr -pbkdf2 -pass pass:"$pass" \
-      -in "$contentfile" | gunzip -c > "$contentfile.decrypted"
+    decrypt_and_decompress_file "$contentfile" "$pass" > "$contentfile.decrypted"
 
     mv "$contentfile.decrypted" "$contentfile"
 
@@ -1054,7 +1075,10 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     if [[ -z "$outfile" ]]; then
       outfile=$(grep -i '^Content-Disposition:' "$headerfile" \
         | sed -n 's/.*filename="\([^"]*\)".*/\1/p')
-      if [[ -z "$outfile" ]]; then
+      if [[ -n "$outfile" ]]; then
+        $verbose && echo "Encrypted filename from header: $outfile"
+        outfile=$(decrypt_value_base64 "$outfile" "$pass")
+      else
         outfile="download.$(date +%s)"
       fi
     fi
