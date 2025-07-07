@@ -1040,11 +1040,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     }
 
     # ensure the SSH local-forward exists
-#    if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
-#      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
-#        || { echo "❌ could not add local forward"; return 1; }
-#      restart_susops
-#    fi
+    if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
+      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
+        || { echo "❌ could not add local forward"; return 1; }
+      restart_susops
+    fi
 
     # fetch, decrypt, decompress
     echo "🔽 Downloading via HTTP on localhost:$port …"
@@ -1476,4 +1476,3 @@ EOF
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   susops "$@"
 fi
-
