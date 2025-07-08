@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 susops() {
   # Disable job control PID output
@@ -917,16 +917,15 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     exec -a "$SUSOPS_SHARE_PROCESS_NAME-$port" nc -l "$port" <"$out_fifo" >"$in_fifo" &
     NC_PID=$!
     # assign them to numbered FDs
-    exec {READ_FD}<>"$in_fifo"
-    exec {WRITE_FD}<>"$out_fifo"
-    # remember to clean up these names later
+    exec 3<>"$in_fifo"
+    exec 4<>"$out_fifo"
     FIFOS=("$in_fifo" "$out_fifo")
   }
 
   cleanup_conn() {
     # close our FDs
-    exec {READ_FD}>&-
-    exec {WRITE_FD}>&-
+    exec 3>&-
+    exec 4>&-
     # wait for netcat to exit
     wait "$NC_PID"
     # remove fifos if we created them
@@ -935,6 +934,59 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         unlink "$fifo"
       done
     fi
+  }
+
+  handle_connection() {
+    # launch nc as numbered file descriptors to allow read & write to the same socket
+    if ! listen "$port"; then
+      echo "Error: Failed to start share on port $port"
+      running=false
+      return
+    fi
+
+    # 1) read headers until blank line, capture Basic auth
+    local auth header
+    while IFS=$'\r\n' read -r header <&3; do
+      [[ -z $header ]] && break
+      if [[ $header =~ ^Authorization:\ Basic\ (.+)$ ]]; then
+        auth=${BASH_REMATCH[1]}
+      fi
+    done
+
+    # break early to prevent "ambiguous redirect" file errors as NC_SHARE has been closed
+    if ! $running; then
+      echo "Exiting share server..."
+      return
+    fi
+
+    # 2) validate creds
+    local decoded
+    decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
+    if [[ ":$pass" == "$decoded" ]]; then
+      echo "Authorized access"
+      # 200 OK + headers
+      {
+        printf 'HTTP/1.1 200 OK\r\n'
+        printf 'Content-Type: application/octet-stream\r\n'
+        printf 'Content-Length: %s\r\n' "$length"
+        printf 'Content-Disposition: attachment; filename="%s"\r\n' "$encrypted_filename"
+        printf 'Connection: close\r\n'
+        printf '\r\n'
+        cat "$contentfile"
+      } >&4
+    else
+      echo "Unauthorized access"
+      # 401 challenge
+      {
+        printf 'HTTP/1.1 401 Unauthorized\r\n'
+        printf 'WWW-Authenticate: Basic realm="susops share"\r\n'
+        printf 'Content-Length: 0\r\n'
+        printf '\r\n'
+      } >&4
+    fi
+
+    # clean up this coprocess
+    cleanup_conn
   }
 
   ##############################################################################
@@ -971,80 +1023,28 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
     [[ $port ]] || { echo "❌ No free port found"; return 1; }
 
-    echo "🔐 Serving '$file' on http://127.0.0.1:$port (Ctrl+C to stop)"
-
-    # 1 Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
-
-    add "-r" "$port" "$port" "share-$port" "localhost" "localhost" || return 1
+    # Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
+    add -r "$port" "$port" "share-$port" "localhost" "localhost" || return 1
     restart_susops
 
-    # 2 Compress and encrypt the file once
+    echo
+
+    # compress and encrypt the file once
+    align_printf "🔐 encrypting file '%s' with password '%s' ..." "Share server:" "$file" "$pass"
     local contentfile basename
     contentfile="$(mktemp)"
     compress_and_encrypt_file "$file" "$pass" > "$contentfile"
     $verbose && echo "Created encrypted content file: $contentfile"
 
+    # encrypt metadata filename
     length=$(wc -c <"$contentfile")
     basename=$(basename "$file")
     encrypted_filename=$(encrypt_value_base64 "$basename" "$pass")
     $verbose && echo "Encrypted filename: $encrypted_filename"
 
-    handle_connection() {
-      # launch nc as a coprocess to allow read & write to the same socket
-      listen "$port"
+    align_printf "✅  sharing encrypted file '%s' on http://127.0.0.1:%s (Ctrl+C to stop)" "Share server:" "$file" "$port"
 
-      if [[ $? -ne 0 ]]; then
-        echo "Error: Failed to start share on port $port"
-        running=false
-        return
-      fi
 
-      # 1) read headers until blank line, capture Basic auth
-      local auth header
-      while IFS=$'\r\n' read -r header <&"$READ_FD"; do
-        [[ -z $header ]] && break
-        if [[ $header =~ ^Authorization:\ Basic\ (.+)$ ]]; then
-          auth=${BASH_REMATCH[1]}
-        fi
-      done
-
-      # break early to prevent "ambiguous redirect" file errors as NC_SHARE has been closed
-      if ! $running; then
-        echo "Exiting share server..."
-        return
-      fi
-
-      # 2) validate creds
-      local decoded
-      decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
-      if [[ ":$pass" == "$decoded" ]]; then
-        echo "Authorized access"
-        # 200 OK + headers
-        {
-          printf 'HTTP/1.1 200 OK\r\n'
-          printf 'Content-Type: application/octet-stream\r\n'
-          printf 'Content-Length: %s\r\n' "$length"
-          printf 'Content-Disposition: attachment; filename="%s"\r\n' "$encrypted_filename"
-          printf 'Connection: close\r\n'
-          printf '\r\n'
-          cat "$contentfile"
-        } >&"$WRITE_FD"
-      else
-        echo "Unauthorized access"
-        # 401 challenge
-        {
-          printf 'HTTP/1.1 401 Unauthorized\r\n'
-          printf 'WWW-Authenticate: Basic realm="susops share"\r\n'
-          printf 'Content-Length: 0\r\n'
-          printf '\r\n'
-        } >&"$WRITE_FD"
-      fi
-
-      # clean up this coprocess
-      cleanup_conn
-    }
-
-    # 3 Loop, handling one client at a time
     local running=true share_process_name="$SUSOPS_SHARE_PROCESS_NAME-$port"
     trap 'running=false' SIGINT
 
@@ -1066,21 +1066,23 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       # get pid by process name
       pids=$(pgrep -x "$share_process_name" 2>/dev/null || :)
       NC_PID=$(echo "$pids" | head -n 1)
-      echo "Share server running with PID: $NC_PID"
+      $verbose && echo "Share server running with PID: $NC_PID"
       # wait until NC_PID has quit
-      while kill -0 "$NC_PID" 2>/dev/null; do
+      while $running && kill -0 "$NC_PID" 2>/dev/null; do
         sleep 0.1
       done
     done
 
-    echo "Exiting share server..."
+    echo
+    align_printf "⚠️ exiting ..." "Share server:"
+    stop_by_name "$share_process_name" "Share server" true
 
-    unlink "$contentfile" || echo "❌ Could not unlink encrypted file '$file.encrypted'"
+    unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
     rm "-r" "$port" || return 1
     restart_susops
 
-    echo "Exited."
+    align_printf "🛑 exited" "Share server:"
   }
 
   ##############################################################################
