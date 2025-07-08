@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 susops() {
   # Disable job control PID output
@@ -19,6 +19,8 @@ susops() {
   local -r SUSOPS_PAC_UNIFIED_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-pac"
   local -r SUSOPS_PAC_LOOP_PROCESS_NAME="$SUSOPS_PAC_UNIFIED_PROCESS_NAME-loop"
   local -r SUSOPS_PAC_NC_PROCESS_NAME="$SUSOPS_PAC_UNIFIED_PROCESS_NAME-nc"
+
+  local -r SUSOPS_SHARE_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-share"
 
   mkdir -p "$workspace"
 
@@ -912,7 +914,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     out_fifo=$(mktemp -u)
     mkfifo "$in_fifo" "$out_fifo"
     # launch netcat with FIFO redirection
-    nc -l "$port" <"$out_fifo" >"$in_fifo" &
+    exec -a "$SUSOPS_SHARE_PROCESS_NAME-$port" nc -l "$port" <"$out_fifo" >"$in_fifo" &
     NC_PID=$!
     # assign them to numbered FDs
     exec {READ_FD}<>"$in_fifo"
@@ -976,11 +978,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     add "-r" "$port" "$port" "share-$port" "localhost" "localhost" || return 1
     restart_susops
 
-    # 2 Loop, handling one client at a time
-    running=true
-    trap "running=false" SIGINT
-
-    # 3 Compress and encrypt the file once
+    # 2 Compress and encrypt the file once
     local contentfile basename
     contentfile="$(mktemp)"
     compress_and_encrypt_file "$file" "$pass" > "$contentfile"
@@ -991,13 +989,14 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     encrypted_filename=$(encrypt_value_base64 "$basename" "$pass")
     $verbose && echo "Encrypted filename: $encrypted_filename"
 
-    while $running; do
+    handle_connection() {
       # launch nc as a coprocess to allow read & write to the same socket
       listen "$port"
 
       if [[ $? -ne 0 ]]; then
         echo "Error: Failed to start share on port $port"
-        break
+        running=false
+        return
       fi
 
       # 1) read headers until blank line, capture Basic auth
@@ -1012,7 +1011,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       # break early to prevent "ambiguous redirect" file errors as NC_SHARE has been closed
       if ! $running; then
         echo "Exiting share server..."
-        break
+        return
       fi
 
       # 2) validate creds
@@ -1043,7 +1042,38 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
       # clean up this coprocess
       cleanup_conn
+    }
+
+    # 3 Loop, handling one client at a time
+    local running=true share_process_name="$SUSOPS_SHARE_PROCESS_NAME-$port"
+    trap 'running=false' SIGINT
+
+    while $running; do
+      handle_connection &
+      # wait until process has started
+      local max_wait=5
+      local interval=0.1
+      steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
+      for ((i=0; i<steps; i++)); do
+        if pgrep -f "$share_process_name" >/dev/null; then
+          $verbose && printf "Share server running on port %s (PID %s)\n" "$port" "$(pgrep -f "$share_process_name")"
+          break
+        fi
+        $verbose && printf "Waiting for share server to start... (%d/%d)\n" $((i + 1)) "$steps"
+        sleep "$interval"
+      done
+
+      # get pid by process name
+      pids=$(pgrep -x "$share_process_name" 2>/dev/null || :)
+      NC_PID=$(echo "$pids" | head -n 1)
+      echo "Share server running with PID: $NC_PID"
+      # wait until NC_PID has quit
+      while kill -0 "$NC_PID" 2>/dev/null; do
+        sleep 0.1
+      done
     done
+
+    echo "Exiting share server..."
 
     unlink "$contentfile" || echo "❌ Could not unlink encrypted file '$file.encrypted'"
 
