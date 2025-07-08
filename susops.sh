@@ -905,6 +905,36 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     openssl enc -d -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" < "$encrypted_file" | gunzip
   }
 
+  #   Starts nc listening on $1, populating READ_FD and WRITE_FD
+  listen() {
+    local port=$1 in_fifo out_fifo
+    in_fifo=$(mktemp -u)
+    out_fifo=$(mktemp -u)
+    mkfifo "$in_fifo" "$out_fifo"
+    # launch netcat with FIFO redirection
+    nc -l "$port" <"$out_fifo" >"$in_fifo" &
+    NC_PID=$!
+    # assign them to numbered FDs
+    exec {READ_FD}<>"$in_fifo"
+    exec {WRITE_FD}<>"$out_fifo"
+    # remember to clean up these names later
+    FIFOS=("$in_fifo" "$out_fifo")
+  }
+
+  cleanup_conn() {
+    # close our FDs
+    exec {READ_FD}>&-
+    exec {WRITE_FD}>&-
+    # wait for netcat to exit
+    wait "$NC_PID"
+    # remove fifos if we created them
+    if [[ -n "${FIFOS[*]}" ]]; then
+      for fifo in "${FIFOS[@]}"; do
+        unlink "$fifo"
+      done
+    fi
+  }
+
   ##############################################################################
   # susops share  <file> [password] [port]
   #
@@ -963,7 +993,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     while $running; do
       # launch nc as a coprocess to allow read & write to the same socket
-      coproc NC_SHARE { nc -l "$port"; }
+      listen "$port"
 
       if [[ $? -ne 0 ]]; then
         echo "Error: Failed to start share on port $port"
@@ -972,7 +1002,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
       # 1) read headers until blank line, capture Basic auth
       local auth header
-      while IFS=$'\r\n' read -r header <&"${NC_SHARE[0]}"; do
+      while IFS=$'\r\n' read -r header <&"$READ_FD"; do
         [[ -z $header ]] && break
         if [[ $header =~ ^Authorization:\ Basic\ (.+)$ ]]; then
           auth=${BASH_REMATCH[1]}
@@ -999,7 +1029,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
           printf 'Connection: close\r\n'
           printf '\r\n'
           cat "$contentfile"
-        } >&"${NC_SHARE[1]}"
+        } >&"$WRITE_FD"
       else
         echo "Unauthorized access"
         # 401 challenge
@@ -1008,13 +1038,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
           printf 'WWW-Authenticate: Basic realm="susops share"\r\n'
           printf 'Content-Length: 0\r\n'
           printf '\r\n'
-        } >&"${NC_SHARE[1]}"
+        } >&"$WRITE_FD"
       fi
 
       # clean up this coprocess
-      exec {NC_SHARE[0]}>&-   # close read end
-      exec {NC_SHARE[1]}>&-   # close write end
-      wait "$NC_SHARE_PID"    # reap the nc process before looping again
+      cleanup_conn
     done
 
     unlink "$contentfile" || echo "❌ Could not unlink encrypted file '$file.encrypted'"
