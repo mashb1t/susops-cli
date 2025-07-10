@@ -963,7 +963,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local decoded
     decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
     if [[ ":$pass" == "$decoded" ]]; then
-      echo "Authorized access"
+      align_printf "✅  Authorized access" "Share server:"
       # 200 OK + headers
       {
         printf 'HTTP/1.1 200 OK\r\n'
@@ -975,7 +975,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         cat "$contentfile"
       } >&4
     else
-      echo "Unauthorized access"
+      align_printf "🚫 Unauthorized access" "Share server:"
       # 401 challenge
       {
         printf 'HTTP/1.1 401 Unauthorized\r\n'
@@ -1079,7 +1079,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
-    rm "-r" "$port" || return 1
+    rm -r "$port" || return 1
     restart_susops
 
     align_printf "🛑 exited" "Share server:"
@@ -1124,6 +1124,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       echo "❌ Download failed or unauthorized"
       unlink "$headerfile"
       unlink "$contentfile"
+      rm -l "$port"
       return 1
     fi
 
@@ -1145,7 +1146,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     mv "$contentfile" "$outfile" \
       && echo "✅ Saved to $outfile" \
-      || { echo "❌ Could not save to $outfile"; return 1; }
+      || { echo "❌ Could not save to $outfile"; rm -l "$port"; return 1; }
+    rm -l "$port"
   }
 
   print_help() {
