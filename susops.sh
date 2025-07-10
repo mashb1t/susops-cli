@@ -963,7 +963,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local decoded
     decoded=$(printf '%s' "$auth" | base64 -d 2>/dev/null)
     if [[ ":$pass" == "$decoded" ]]; then
-      align_printf "✅  Authorized access" "Share server:"
+      align_printf "✅  authorized access" "$(date +'%Y-%m-%d %H:%M:%S'):"
       # 200 OK + headers
       {
         printf 'HTTP/1.1 200 OK\r\n'
@@ -975,7 +975,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
         cat "$contentfile"
       } >&4
     else
-      align_printf "🚫 Unauthorized access" "Share server:"
+      align_printf "🚫 unauthorized access" "$(date +'%Y-%m-%d %H:%M:%S'):"
       # 401 challenge
       {
         printf 'HTTP/1.1 401 Unauthorized\r\n'
