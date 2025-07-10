@@ -968,7 +968,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       {
         printf 'HTTP/1.1 200 OK\r\n'
         printf 'Content-Type: application/octet-stream\r\n'
-        printf 'Content-Length: %s\r\n' "$length"
+#        printf 'Content-Length: %s\r\n' "$length"
         printf 'Content-Disposition: attachment; filename="%s"\r\n' "$encrypted_filename"
         printf 'Connection: close\r\n'
         printf '\r\n'
@@ -980,7 +980,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       {
         printf 'HTTP/1.1 401 Unauthorized\r\n'
         printf 'WWW-Authenticate: Basic realm="susops share"\r\n'
-        printf 'Content-Length: 0\r\n'
+#        printf 'Content-Length: 0\r\n'
         printf '\r\n'
       } >&4
     fi
