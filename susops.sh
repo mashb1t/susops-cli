@@ -1522,7 +1522,7 @@ EOF
     fetch)
       # Usage: susops fetch <port> <password> [outfile]
       #
-      # • <port>      Port the port the share server is running on
+      # • <port>      Port the share server is running on
       # • <password>  Password to authenticate against the share server
       # • [outfile]   Where to write the file (default: filename from Content-Disposition header)
 
