@@ -672,7 +672,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     start_susops
   }
 
-  add() {
+  add_entry() {
     local process_name
     process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
 
@@ -834,7 +834,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     esac
   }
 
-  rm() {
+  remove_entry() {
     local process_name
     process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
     case "$1" in
@@ -1024,7 +1024,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     [[ $port ]] || { echo "❌ No free port found"; return 1; }
 
     # Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
-    add -r "$port" "$port" "share-$port" "localhost" "localhost" || return 1
+    add_entry -r "$port" "$port" "share-$port" "localhost" "localhost" || return 1
     restart_susops
 
     echo
@@ -1079,7 +1079,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
-    rm -r "$port" || return 1
+    remove_entry -r "$port" || return 1
     restart_susops
 
     align_printf "🛑 exited" "Share server:"
@@ -1101,7 +1101,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     # ensure the SSH local-forward exists
     if ! check_exact_rule "$port" "$port" "local" "$conn_tag" >/dev/null; then
-      add -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
+      add_entry -l "$port" "$port" "fetch-$port" "localhost" "localhost" \
         || { echo "❌ could not add local forward"; return 1; }
       restart_susops
     fi
@@ -1124,7 +1124,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       echo "❌ Download failed or unauthorized"
       unlink "$headerfile"
       unlink "$contentfile"
-      rm -l "$port"
+      remove_entry -l "$port"
       return 1
     fi
 
@@ -1146,8 +1146,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
     mv "$contentfile" "$outfile" \
       && echo "✅ Saved to $outfile" \
-      || { echo "❌ Could not save to $outfile"; rm -l "$port"; return 1; }
-    rm -l "$port"
+      || { echo "❌ Could not save to $outfile"; remove_entry -l "$port"; return 1; }
+    remove_entry -l "$port"
   }
 
   print_help() {
@@ -1297,7 +1297,7 @@ EOF
       #                   [-l LOCAL_PORT REMOTE_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a local forward
       #                   [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]  – Add a remote forward
 
-      add "$@"
+      add_entry "$@"
       ;;
 
 
@@ -1311,7 +1311,7 @@ EOF
       # • REMOTE_PORT – Port to remove from remote forward
       #
 
-      rm "$@"
+      remove_entry "$@"
       ;;
 
     restart)
@@ -1412,7 +1412,7 @@ EOF
       pkill -f "$SUSOPS_SSH_PROCESS_NAME"
       pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
 
-      rm -rf "$workspace"
+      remove_entry -rf "$workspace"
       echo "Removed workspace '$workspace' and all susops configuration."
       ;;
 
