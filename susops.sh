@@ -321,7 +321,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local pids
 
     if [[ $exact == true ]]; then
-      pids=$(pgrep -x "${pattern}" 2>/dev/null || :)
+      # pgrep -x matches comm (kernel name), not argv[0] on Linux.
+      # Use pgrep -f with an anchored regex to match argv[0] set by exec -a.
+      pids=$(pgrep -f "^${pattern}( |$)" 2>/dev/null || :)
     else
       pids=$(pgrep -f "${pattern}"   2>/dev/null || :)
     fi
@@ -378,7 +380,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local pids
 
     if [[ $exact == true ]]; then
-      pids=$(pgrep -x "$pattern" 2>/dev/null || :)
+      pids=$(pgrep -f "^${pattern}( |$)" 2>/dev/null || :)
     else
       pids=$(pgrep -f "$pattern" 2>/dev/null || :)
     fi
@@ -1064,7 +1066,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       done
 
       # get pid by process name
-      pids=$(pgrep -x "$share_process_name" 2>/dev/null || :)
+      pids=$(pgrep -f "^${share_process_name}( |$)" 2>/dev/null || :)
       NC_PID=$(echo "$pids" | head -n 1)
       $verbose && echo "Share server running with PID: $NC_PID"
       # wait until NC_PID has quit
