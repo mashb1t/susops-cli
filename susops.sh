@@ -321,8 +321,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local pids
 
     if [[ $exact == true ]]; then
-      # pgrep -x matches comm (kernel name), not argv[0] on Linux.
-      # Use pgrep -f with an anchored regex to match argv[0] set by exec -a.
+      # exec -a renames argv[0] but not /proc/PID/comm, so pgrep -x (which
+      # matches comm) misses processes renamed via exec -a. Use pgrep -f with
+      # anchored pattern to match against the full cmdline instead.
       pids=$(pgrep -f "^${pattern}( |$)" 2>/dev/null || :)
     else
       pids=$(pgrep -f "${pattern}"   2>/dev/null || :)
@@ -380,7 +381,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     local pids
 
     if [[ $exact == true ]]; then
-      pids=$(pgrep -f "^${pattern}( |$)" 2>/dev/null || :)
+      pids=$(pgrep -f "^$pattern( |$)" 2>/dev/null || :)
     else
       pids=$(pgrep -f "$pattern" 2>/dev/null || :)
     fi
@@ -613,7 +614,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       # ensure
       local max_wait=5
       local interval=0.1
-      steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
+      local steps=$(( max_wait * 10 ))  # max_wait / interval, using integers to avoid locale issues with bc/printf
       for ((i=0; i<steps; i++)); do
         if nc_pid=$(pgrep -f "$SUSOPS_PAC_NC_PROCESS_NAME"); then
           align_printf "🚀 started (PIDs %s & %s, port %s, URL %s)" "PAC server:" "$pac_pid" "$nc_pid" "$pac_port" "http://localhost:$pac_port/susops.pac"
@@ -1048,36 +1049,26 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
 
 
     local running=true share_process_name="$SUSOPS_SHARE_PROCESS_NAME-$port"
-    trap 'running=false' SIGINT
+    local conn_pid=
+    trap 'running=false; [[ -n "$conn_pid" ]] && kill "$conn_pid" 2>/dev/null || true' SIGINT
 
     while $running; do
       handle_connection &
-      # wait until process has started
-      local max_wait=5
-      local interval=0.1
-      steps=$(printf "%.0f" "$(echo "$max_wait / $interval" | bc -l)")  # workaround, $i has to be an integer value
-      for ((i=0; i<steps; i++)); do
-        if pgrep -f "$share_process_name" >/dev/null; then
-          $verbose && printf "Share server running on port %s (PID %s)\n" "$port" "$(pgrep -f "$share_process_name")"
-          break
-        fi
-        $verbose && printf "Waiting for share server to start... (%d/%d)\n" $((i + 1)) "$steps"
-        sleep "$interval"
-      done
-
-      # get pid by process name
-      pids=$(pgrep -f "^${share_process_name}( |$)" 2>/dev/null || :)
-      NC_PID=$(echo "$pids" | head -n 1)
-      $verbose && echo "Share server running with PID: $NC_PID"
-      # wait until NC_PID has quit
-      while $running && kill -0 "$NC_PID" 2>/dev/null; do
-        sleep 0.1
-      done
+      conn_pid=$!
+      $verbose && printf "Share server connection handler started (PID %s)\n" "$conn_pid"
+      # wait for the connection handler (and its nc child) to finish
+      wait "$conn_pid" 2>/dev/null || true
+      conn_pid=
+      $verbose && printf "Share server connection handler finished\n"
     done
 
     echo
     align_printf "⚠️ exiting ..." "Share server:"
-    stop_by_name "$share_process_name" "Share server" true
+
+    # Kill any remaining background jobs
+    jobs -p | xargs -r kill -9 2>/dev/null || true
+    # Also ensure all nc processes with this share name are gone (safety fallback)
+    pkill -f "^$share_process_name( |$)" 2>/dev/null || true
 
     unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
