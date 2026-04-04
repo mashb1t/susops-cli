@@ -406,8 +406,6 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     return 1
   }
 
-  # Kill every susops-managed process type (SSH, PAC, share).
-  # Used by stop --force, reset, and share cleanup.
   kill_all_susops_processes() {
     pkill -f "$SUSOPS_SSH_PROCESS_NAME"           2>/dev/null || true
     pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"   2>/dev/null || true
@@ -640,18 +638,20 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   stop_susops() {
-    # Usage: susops stop [--keep-ports] [--force]
+    # Usage: susops stop [--keep-ports] [--force] [--fileshares]
     #
     # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
     #   stopped connection’s socks_proxy_port is reset to 0.
     # • --force stops all connections and the PAC server no matter what's currently in the config
     local keep_ports=false
     local force=false
+    local fileshares=false
     # TODO check if 3rd param for force to also kill share processes is needed
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --keep-ports) keep_ports=true; shift ;;
         --force) force=true; shift ;;
+        --fileshares) fileshares=true; shift ;;
         *) shift ;;
       esac
     done
@@ -659,6 +659,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     if $force; then
       pkill -f "$SUSOPS_SSH_PROCESS_NAME"           2>/dev/null || true
       pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"   2>/dev/null || true
+      if $fileshares; then
+        pkill -f "$SUSOPS_SHARE_PROCESS_NAME"       2>/dev/null || true
+      fi
       return 0
     fi
 
@@ -671,7 +674,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # Stop the PAC server if no other connections are running
     if ! pgrep -f "$SUSOPS_SSH_PROCESS_NAME" >/dev/null; then
       stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true # keep port the same no matter if $keep_ports is set
-      #stop_by_name "$SUSOPS_SHARE_PROCESS_NAME" "file share" true
+      if $fileshares; then
+        pkill -f "$SUSOPS_SHARE_PROCESS_NAME" 2>/dev/null || true
+      fi
     fi
 
     return 0
@@ -681,6 +686,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # Usage: susops restart
     #
     # Restart the SOCKS proxy and PAC server without changing the ports.
+    # TODO check if param for also restarting share processes is needed
     stop_susops --keep-ports --force
     start_susops
   }
@@ -725,7 +731,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
           return 1
         elif check_port_source "$rport" "remote"; then
           echo "Remote port ${rport} is already the source of a remote forward"
-          return 1
+          #return 1
         elif check_port_in_use "$lport"; then
           echo "Local port ${lport} is already in use"
           return 1
@@ -1049,7 +1055,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       local script_path bash_bin process_name
       script_path=$(readlink -f "${BASH_SOURCE[0]}")
       bash_bin=$(command -v bash)
-      process_name="$SUSOPS_SHARE_LOOP_PROCESS_NAME"
+      process_name="$SUSOPS_SHARE_LOOP_PROCESS_NAME-$port"
 
       SUSOPS_SHARE_NAMED=1 nohup \
         "$bash_bin" -c 'exec -a "$1" "$2" "${@:3}"' \
