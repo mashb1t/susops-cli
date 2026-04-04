@@ -21,6 +21,7 @@ susops() {
   local -r SUSOPS_PAC_NC_PROCESS_NAME="$SUSOPS_PAC_UNIFIED_PROCESS_NAME-nc"
 
   local -r SUSOPS_SHARE_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-share"
+  local -r SUSOPS_SHARE_LOOP_PROCESS_NAME="$SUSOPS_SHARE_PROCESS_NAME-loop"
 
   mkdir -p "$workspace"
 
@@ -405,6 +406,14 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     return 1
   }
 
+  # Kill every susops-managed process type (SSH, PAC, share).
+  # Used by stop --force, reset, and share cleanup.
+  kill_all_susops_processes() {
+    pkill -f "$SUSOPS_SSH_PROCESS_NAME"           2>/dev/null || true
+    pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"   2>/dev/null || true
+    pkill -f "$SUSOPS_SHARE_PROCESS_NAME"         2>/dev/null || true
+  }
+
   ############################################################################
   # test_entry  <target> [conn_tag]
   #
@@ -638,6 +647,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # • --force stops all connections and the PAC server no matter what's currently in the config
     local keep_ports=false
     local force=false
+    # TODO check if 3rd param for force to also kill share processes is needed
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --keep-ports) keep_ports=true; shift ;;
@@ -647,9 +657,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     done
 
     if $force; then
-      # Stop all connections and the PAC server
-      pkill -f "$SUSOPS_SSH_PROCESS_NAME"
-      pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
+      pkill -f "$SUSOPS_SSH_PROCESS_NAME"           2>/dev/null || true
+      pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"   2>/dev/null || true
       return 0
     fi
 
@@ -660,8 +669,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     done < <(get_connection_tags)
 
     # Stop the PAC server if no other connections are running
-    if ! pgrep -f $SUSOPS_SSH_PROCESS_NAME >/dev/null; then
+    if ! pgrep -f "$SUSOPS_SSH_PROCESS_NAME" >/dev/null; then
       stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true # keep port the same no matter if $keep_ports is set
+      #stop_by_name "$SUSOPS_SHARE_PROCESS_NAME" "file share" true
     fi
 
     return 0
@@ -1001,6 +1011,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   ##############################################################################
   share_file() {
     local file=$1 pass=$2 req_port=$3
+
     [[ -r $file ]] || {
       echo "Usage: susops share <file> [password] [port]"
       echo "Ensure the file exists and is readable."
@@ -1026,6 +1037,29 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     fi
     [[ $port ]] || { echo "❌ No free port found"; return 1; }
 
+    # ── Self-rename: if not yet named, re-exec this process with the share loop name ──
+    if [[ "${SUSOPS_SHARE_NAMED:-}" != "1" ]]; then
+      local share_args=()
+      $verbose        && share_args+=("--verbose")
+      $conn_specified && share_args+=("--connection" "$conn_tag")
+      share_args+=("share" "$file")
+      [[ -n $pass     ]] && share_args+=("$pass")
+      [[ -n $req_port ]] && share_args+=("$req_port")
+
+      local script_path bash_bin process_name
+      script_path=$(readlink -f "${BASH_SOURCE[0]}")
+      bash_bin=$(command -v bash)
+      process_name="$SUSOPS_SHARE_LOOP_PROCESS_NAME"
+
+      SUSOPS_SHARE_NAMED=1 nohup \
+        "$bash_bin" -c 'exec -a "$1" "$2" "${@:3}"' \
+        _ "$process_name" "$bash_bin" "$script_path" "${share_args[@]}" \
+        </dev/null >/dev/null 2>&1 &
+      disown $!
+      $verbose && echo "Share process spawned (PID $!)"
+      return 0
+    fi
+
     # Ensure the reverse-forward exists (localhost:port on proxy → localhost:port here)
     add_entry -r "$port" "$port" "share-$port" "localhost" "localhost" || return 1
     restart_susops
@@ -1048,7 +1082,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     align_printf "✅  sharing encrypted file '%s' on http://127.0.0.1:%s (Ctrl+C to stop)" "Share server:" "$file" "$port"
 
 
-    local running=true share_process_name="$SUSOPS_SHARE_PROCESS_NAME-$port"
+    local running=true
     local conn_pid=
     trap 'running=false; [[ -n "$conn_pid" ]] && kill "$conn_pid" 2>/dev/null || true' SIGINT
 
@@ -1056,7 +1090,6 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       handle_connection &
       conn_pid=$!
       $verbose && printf "Share server connection handler started (PID %s)\n" "$conn_pid"
-      # wait for the connection handler (and its nc child) to finish
       wait "$conn_pid" 2>/dev/null || true
       conn_pid=
       $verbose && printf "Share server connection handler finished\n"
@@ -1065,10 +1098,9 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     echo
     align_printf "⚠️ exiting ..." "Share server:"
 
-    # Kill any remaining background jobs
-    jobs -p | xargs -r kill -9 2>/dev/null || true
-    # Also ensure all nc processes with this share name are gone (safety fallback)
-    pkill -f "^$share_process_name( |$)" 2>/dev/null || true
+    # Kill any remaining background jobs / orphaned nc workers for this port
+    jobs -p | xargs -r kill 2>/dev/null || true
+    pkill -f "$SUSOPS_SHARE_PROCESS_NAME-$port" 2>/dev/null || true
 
     unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
@@ -1401,9 +1433,7 @@ EOF
       # do not use $SUSOPS_PROCESS_NAME_BASE here as this will also stop
       # - all browsers using the pac server url
       # - VCS applications
-
-      pkill -f "$SUSOPS_SSH_PROCESS_NAME"
-      pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"
+      kill_all_susops_processes
 
       remove_entry -rf "$workspace"
       echo "Removed workspace '$workspace' and all susops configuration."
@@ -1508,6 +1538,7 @@ EOF
       # • <file>       File to share (must be readable)
       # • [password]   Password to protect the share (optional, generated if not provided)
       # • [port]       Port to serve the file on (optional, random if not provided)
+
 
       share_file "$@"
       ;;
