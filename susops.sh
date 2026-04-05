@@ -23,6 +23,8 @@ susops() {
   local -r SUSOPS_SHARE_PROCESS_NAME="$SUSOPS_PROCESS_NAME_BASE-share"
   local -r SUSOPS_SHARE_LOOP_PROCESS_NAME="$SUSOPS_SHARE_PROCESS_NAME-loop"
 
+  local -r SUSOPS_SHARED_FILES_DIR="$workspace/shared-files"
+
   mkdir -p "$workspace"
 
   # Bootstrap config if missing
@@ -486,6 +488,12 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     [[ $1 =~ ^[0-9]+$ && $1 -ge 1 && $1 -le 65535 ]]
   }
 
+  check_forward_tag_contains_value() {
+    # $1: tag, $2: type (local|remote)
+    read_config ".connections[].forwards.$2[] | select(.tag | contains(\"$1\"))" | grep -q . && return 0
+    return 1
+  }
+
   # Check if exact local/remote forward rule exists
   check_exact_rule() {
     # $1: src, $2: dst, $3: type (local|remote)
@@ -638,20 +646,20 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   }
 
   stop_susops() {
-    # Usage: susops stop [--keep-ports] [--force] [--fileshares]
+    # Usage: susops stop [--keep-ports] [--force] [--keep-fileshares]
     #
-    # • --keep-ports keeps the ports in config.yaml unchanged; otherwise the
-    #   stopped connection’s socks_proxy_port is reset to 0.
-    # • --force stops all connections and the PAC server no matter what's currently in the config
+    # * --keep-ports keeps the ports in config.yaml unchanged; otherwise the stopped connection’s socks_proxy_port is reset to 0.
+    # * --force stops all connections and the PAC server no matter what's currently in the config
+    # * --keep-fileshares keeps the file share processes running (if any)
     local keep_ports=false
     local force=false
-    local fileshares=false
-    # TODO check if 3rd param for force to also kill share processes is needed
+    local keep_fileshares=false
+
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --keep-ports) keep_ports=true; shift ;;
         --force) force=true; shift ;;
-        --fileshares) fileshares=true; shift ;;
+        --keep-fileshares) keep_fileshares=true; shift ;;
         *) shift ;;
       esac
     done
@@ -659,8 +667,11 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     if $force; then
       pkill -f "$SUSOPS_SSH_PROCESS_NAME"           2>/dev/null || true
       pkill -f "$SUSOPS_PAC_UNIFIED_PROCESS_NAME"   2>/dev/null || true
-      if $fileshares; then
+      if [[ $keep_fileshares == false ]]; then
         pkill -f "$SUSOPS_SHARE_PROCESS_NAME"       2>/dev/null || true
+        rm -f "${SUSOPS_SHARED_FILES_DIR:-}/*" 2>/dev/null || true
+        remove_forwards_by_tag "share-" local
+        remove_forwards_by_tag "share-" remote
       fi
       return 0
     fi
@@ -671,11 +682,21 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
       stop_by_name "$process_name" "SOCKS5 proxy [$tag]" "$keep_ports" "$tag" true
     done < <(get_connection_tags)
 
-    # Stop the PAC server if no other connections are running
     if ! pgrep -f "$SUSOPS_SSH_PROCESS_NAME" >/dev/null; then
       stop_by_name "$SUSOPS_PAC_UNIFIED_PROCESS_NAME" "PAC server" true # keep port the same no matter if $keep_ports is set
-      if $fileshares; then
-        pkill -f "$SUSOPS_SHARE_PROCESS_NAME" 2>/dev/null || true
+    fi
+
+    if [[ $keep_fileshares == false ]]; then
+      if is_running $SUSOPS_SHARE_PROCESS_NAME false; then
+        stop_by_name "$SUSOPS_SHARE_PROCESS_NAME" "File shares" true
+      fi
+
+      remove_forwards_by_tag "share-" local false
+      remove_forwards_by_tag "share-" remote false
+
+      if [[ -d "$SUSOPS_SHARED_FILES_DIR" ]] && find "$SUSOPS_SHARED_FILES_DIR" -maxdepth 1 -type f | grep -q .; then
+        find "$SUSOPS_SHARED_FILES_DIR" -maxdepth 1 -type f -delete 2>/dev/null || true
+        align_printf "🗑 cleaned up $SUSOPS_SHARED_FILES_DIR" "File shares:"
       fi
     fi
 
@@ -686,8 +707,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # Usage: susops restart
     #
     # Restart the SOCKS proxy and PAC server without changing the ports.
-    # TODO check if param for also restarting share processes is needed
-    stop_susops --keep-ports --force
+    stop_susops --keep-ports --force --keep-fileshares
     start_susops
   }
 
@@ -906,6 +926,23 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     esac
   }
 
+  remove_forwards_by_tag() {
+    local tag=$1 type=$2 do_print=${3:-true}
+    local process_name
+    process_name=$(normalize_process_name "$SUSOPS_SSH_PROCESS_NAME-$conn_tag")
+
+    if check_forward_tag_contains_value "$tag" "$type"; then
+      update_config "del(.connections[].forwards.${type}[] | select(.tag | contains(\"$tag\")))"
+      [[ $do_print == true ]] && echo "Removed ${type} forwards with tag containing [$tag]"
+      [[ $do_print == true ]] && is_running "$process_name" true $do_print && echo "Restart proxy to apply"
+      return 0
+    else
+      [[ $do_print == true ]] && echo "No ${type} forward for $tag"
+      return 1
+    fi
+  }
+
+
   encrypt_value_base64() {
     local string=$1 pass=$2
     echo "$string" | openssl enc -aes-256-ctr -salt -pbkdf2 -pass pass:"$pass" -base64 -A
@@ -1011,12 +1048,22 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
   ##############################################################################
   # susops share  <file> [password] [port]
   #
-  # • <file>       File to share (must be readable)
-  # • [password]   Password to protect the share (optional, generated if not provided)
-  # • [port]       Port to serve the file on (optional, random if not provided)
+  # --non-interactive  Spawns a background process with the share loop name, managed by `susops stop`
+  # • <file>           File to share (must be readable)
+  # • [password]       Password to protect the share (optional, generated if not provided)
+  # • [port]           Port to serve the file on (optional, random if not provided)
   ##############################################################################
   share_file() {
-    local file=$1 pass=$2 req_port=$3
+    local file=$1 pass=$2 req_port=$3 non_interactive=false
+
+    echo "Starting share server for file '$file' ..."
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --non-interactive) non_interactive=true; shift ;;
+        *) shift ;;
+      esac
+    done
 
     [[ -r $file ]] || {
       echo "Usage: susops share <file> [password] [port]"
@@ -1044,7 +1091,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     [[ $port ]] || { echo "❌ No free port found"; return 1; }
 
     # ── Self-rename: if not yet named, re-exec this process with the share loop name ──
-    if [[ "${SUSOPS_SHARE_NAMED:-}" != "1" ]]; then
+    if [[ $non_interactive == true && -z "${SUSOPS_SHARE_NAMED:-}" ]]; then
       local share_args=()
       $verbose        && share_args+=("--verbose")
       $conn_specified && share_args+=("--connection" "$conn_tag")
@@ -1075,7 +1122,10 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # compress and encrypt the file once
     align_printf "🔐 encrypting file '%s' with password '%s' ..." "Share server:" "$file" "$pass"
     local contentfile basename
-    contentfile="$(mktemp)"
+
+    mkdir -p $SUSOPS_SHARED_FILES_DIR
+    contentfile=$(mktemp --tmpdir=$SUSOPS_SHARED_FILES_DIR --suffix ".enc")
+
     compress_and_encrypt_file "$file" "$pass" > "$contentfile"
     $verbose && echo "Created encrypted content file: $contentfile"
 
@@ -1085,8 +1135,7 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     encrypted_filename=$(encrypt_value_base64 "$basename" "$pass")
     $verbose && echo "Encrypted filename: $encrypted_filename"
 
-    align_printf "✅  sharing encrypted file '%s' on http://127.0.0.1:%s (Ctrl+C to stop)" "Share server:" "$file" "$port"
-
+    align_printf "✅  sharing encrypted file '%s' on http://127.0.0.1:%s (Ctrl+C to stop)" "Share server:" "$contentfile" "$port"
 
     local running=true
     local conn_pid=
@@ -1107,6 +1156,8 @@ susops add-connection <tag> <ssh_host> [<socks_proxy_port>]
     # Kill any remaining background jobs / orphaned nc workers for this port
     jobs -p | xargs -r kill 2>/dev/null || true
     pkill -f "$SUSOPS_SHARE_PROCESS_NAME-$port" 2>/dev/null || true
+
+    $verbose && echo "Removing encrypted content file: $contentfile"
 
     unlink "$contentfile" || align_printf "❌ Could not unlink content file '%s'" "Share server:" "$contentfile"
 
@@ -1441,7 +1492,7 @@ EOF
       # - VCS applications
       kill_all_susops_processes
 
-      remove_entry -rf "$workspace"
+      rm -rf "$workspace"
       echo "Removed workspace '$workspace' and all susops configuration."
       ;;
 
@@ -1541,10 +1592,10 @@ EOF
     share)
       # Usage: susops share <file> [password] [port]
       #
-      # • <file>       File to share (must be readable)
-      # • [password]   Password to protect the share (optional, generated if not provided)
-      # • [port]       Port to serve the file on (optional, random if not provided)
-
+      # --non-interactive  Whether to keep the share server running interactively (optional, defaults to true)
+      # • <file>           File to share (must be readable)
+      # • [password]       Password to protect the share (optional, generated if not provided)
+      # • [port]           Port to serve the file on (optional, random if not provided)
 
       share_file "$@"
       ;;
