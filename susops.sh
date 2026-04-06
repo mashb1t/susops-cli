@@ -1243,7 +1243,7 @@ Commands:
       [-r REMOTE_PORT LOCAL_PORT [TAG] [LOCAL_BIND] [REMOTE_BIND]]
   rm  [HOST] [-l LOCAL_PORT] [-r REMOTE_PORT]                                     remove hostname or port forward
   start   [SSH_HOST] [SOCKS_PORT] [PAC_PORT]                                      start proxy and PAC server
-  stop    [--keep-ports] [--force]                                                stop proxy and server (if no other proxies are running)
+  stop    [--keep-ports] [--force] [--keep-fileshares]                            stop proxy and server (if no other proxies are running)
   restart                                                                         stop and start (preserves ports)
   ps                                                                              show status, ports, and forwards
   ls                                                                              output current config
@@ -1253,7 +1253,7 @@ Commands:
   chrome                                                                          launch Chrome with proxy
   chrome-proxy-settings                                                           open Chrome proxy settings
   firefox                                                                         launch Firefox with proxy
-  share   <file> [password] [port]                                                securely share a file (automatically gzipped and encrypted)
+  share   <file> [password] [port] [--non-interactive]                            securely share a file (automatically gzipped and encrypted)
   fetch   <port> <password> [outfile]                                             download a file shared via susops share
   help, --help, -h                                                                show this help message
 Options:
